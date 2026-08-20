@@ -1646,7 +1646,11 @@ class MainWindow(QMainWindow):
             model = _first_value(result, "model", default="")
             sku = _first_value(result, "sku", default="")
             self._set_cell(row, 1, _first_value(result, "hostname"))
-            self._set_cell(row, 2, " / ".join(part for part in (str(model), str(sku)) if part))
+            self._set_cell(
+                row,
+                2,
+                " / ".join(str(part) for part in (model, sku) if part is not None and part != ""),
+            )
             status = str(_first_value(result, "status")).lower()
             host_key_attempts = _first_value(result, "host_key_attempts", default=0)
             backup_attempts = _first_value(result, "attempts", default=0)

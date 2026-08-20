@@ -48,6 +48,7 @@ ARUBA_2930F_MODELS: dict[str, str] = {
 _SKU_RE = re.compile(r"\b(JL\d{3}A)\b", re.IGNORECASE)
 _SOFTWARE_RE = re.compile(r"\b([A-Z]{2}\.\d{2}\.\d{2}\.\d{4})\b")
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_FAMILY_2930F_RE = re.compile(r"\b2930F\b", re.IGNORECASE)
 _APPENDED_CLI_MODE_RE = re.compile(r"^.+\([^()\r\n]+\)[ \t]*[#>]$")
 _MAX_PROMPT_LENGTH = 256
 _CONFLICTING_FAMILY_RE = re.compile(
@@ -142,47 +143,61 @@ def validate_device_identity(
     *,
     hostname: str | None = None,
 ) -> DeviceIdentity:
-    """Return a 2930F identity only when official, non-conflicting evidence exists.
+    """Return a 2930F identity from compatible, non-conflicting CLI evidence.
 
-    ``show version`` is mandatory and must itself identify either the 2930F
-    family or one official 2930F SKU. ``show modules`` can supply the missing
-    SKU but can never independently turn a generic version response into a
-    supported device. Any other switch-family evidence fails closed.
+    ``show version`` remains mandatory, but ArubaOS-Switch commonly reports only
+    software and boot details there. Chassis evidence from ``show modules`` is
+    therefore considered equally. Exact official SKUs take precedence, while a
+    standalone 2930F family marker is sufficient for a generic identity.
     """
 
     version = _ANSI_RE.sub("", version_output or "")
     modules = _ANSI_RE.sub("", modules_output or "")
     if not version.strip():
-        raise _unsupported("The show version response was empty.")
+        raise _unsupported(
+            "The show version response was empty.",
+            DiagnosticDetail.IDENTITY_EVIDENCE_MISSING,
+        )
     if _CONFLICTING_FAMILY_RE.search(version) or _CONFLICTING_FAMILY_RE.search(modules):
-        raise _unsupported("A conflicting switch family was detected.")
+        raise _unsupported(
+            "A conflicting switch family was detected.",
+            DiagnosticDetail.IDENTITY_FAMILY_CONFLICT,
+        )
 
     version_skus = _recognized_skus(version)
     module_skus = _recognized_skus(modules)
-    reported_version_skus = {match.upper() for match in _SKU_RE.findall(version)}
-    if reported_version_skus - ARUBA_2930F_MODELS.keys():
-        raise _unsupported("show version reported an unknown chassis SKU.")
-    has_family_in_version = bool(re.search(r"\b2930F\b", version, re.IGNORECASE))
-    if not has_family_in_version and not version_skus:
-        raise _unsupported("show version did not identify an Aruba 2930F.")
-
-    candidates = version_skus or module_skus
-    if len(candidates) != 1:
-        reason = "No official Aruba 2930F SKU was found."
-        if len(candidates) > 1:
-            reason = "Conflicting Aruba 2930F SKUs were reported."
-        raise _unsupported(reason)
-
-    sku = next(iter(candidates))
-    all_reported = version_skus | module_skus
-    if any(reported != sku for reported in all_reported):
-        raise _unsupported("Conflicting Aruba 2930F SKUs were reported.")
+    candidates = version_skus | module_skus
+    explicit_skus = _all_skus(version) | _explicit_module_identity_skus(modules)
+    unsupported_skus = explicit_skus - ARUBA_2930F_MODELS.keys()
+    if unsupported_skus:
+        detail = (
+            DiagnosticDetail.IDENTITY_SKU_CONFLICT
+            if candidates or len(unsupported_skus) > 1
+            else DiagnosticDetail.IDENTITY_SKU_UNSUPPORTED
+        )
+        raise _unsupported("Unsupported or conflicting chassis SKU evidence was detected.", detail)
 
     software_match = _SOFTWARE_RE.search(version.upper())
+    if len(candidates) == 1:
+        sku = next(iter(candidates))
+        model = ARUBA_2930F_MODELS[sku]
+        display_sku: str | None = sku
+    elif len(candidates) > 1:
+        model = "Aruba 2930F VSF"
+        display_sku = ", ".join(sorted(candidates))
+    elif _FAMILY_2930F_RE.search(version) or _FAMILY_2930F_RE.search(modules):
+        model = "Aruba 2930F"
+        display_sku = None
+    else:
+        raise _unsupported(
+            "The command responses did not identify an Aruba 2930F.",
+            DiagnosticDetail.IDENTITY_EVIDENCE_MISSING,
+        )
+
     return DeviceIdentity(
         hostname=hostname,
-        model=ARUBA_2930F_MODELS[sku],
-        sku=sku,
+        model=model,
+        sku=display_sku,
         software_version=software_match.group(1) if software_match else None,
     )
 
@@ -253,12 +268,38 @@ def normalize_config_text(output: str) -> str:
 
 
 def _recognized_skus(text: str) -> set[str]:
-    reported = {match.upper() for match in _SKU_RE.findall(text)}
+    reported = _all_skus(text)
     return reported & ARUBA_2930F_MODELS.keys()
 
 
-def _unsupported(message: str) -> CollectionFailure:
-    return CollectionFailure(ErrorCode.MODEL_UNSUPPORTED, message)
+def _all_skus(text: str) -> set[str]:
+    return {match.upper() for match in _SKU_RE.findall(text)}
+
+
+def _explicit_module_identity_skus(text: str) -> set[str]:
+    """Return module-output SKUs only from lines that describe chassis identity.
+
+    ``show modules`` can also list transceiver and expansion-module part numbers.
+    Those rows must not turn an otherwise supported chassis into an unknown SKU.
+    """
+
+    reported: set[str] = set()
+    for line in text.splitlines():
+        if re.search(r"\b(?:chassis|model)\b", line, re.IGNORECASE) or re.search(
+            r"\b(?:2930F|2930M|2530|2540|2920|3810M|5400R|6200F|6300[FM]|6400|CX)\b",
+            line,
+            re.IGNORECASE,
+        ):
+            reported.update(_all_skus(line))
+    return reported
+
+
+def _unsupported(message: str, detail: DiagnosticDetail) -> CollectionFailure:
+    return CollectionFailure(
+        ErrorCode.MODEL_UNSUPPORTED,
+        message,
+        diagnostic_detail=detail,
+    )
 
 
 def _line_count(text: str) -> int:

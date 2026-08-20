@@ -64,7 +64,7 @@ def test_previous_release_diagnostic_code_golden_vector() -> None:
     assert decode_diagnostic_code(code).version == "0.1.4"
 
 
-def test_current_release_diagnostic_code_golden_vector() -> None:
+def test_v015_diagnostic_code_golden_vector() -> None:
     code = encode_diagnostic_code(
         version="0.1.5",
         phase=DiagnosticPhase.CONFIG_COLLECTION,
@@ -77,6 +77,23 @@ def test_current_release_diagnostic_code_golden_vector() -> None:
 
     assert code == "A3F1-010PPMRC-C"
     assert decode_diagnostic_code(code).version == "0.1.5"
+
+
+def test_current_release_identity_diagnostic_code_golden_vector() -> None:
+    code = encode_diagnostic_code(
+        version="0.1.6",
+        phase=DiagnosticPhase.DEVICE_IDENTITY,
+        error_code=ErrorCode.MODEL_UNSUPPORTED,
+        status=DiagnosticStatus.FAILED,
+        host_key_attempts=1,
+        backup_attempts=1,
+        detail=DiagnosticDetail.IDENTITY_EVIDENCE_MISSING,
+    )
+
+    assert code == "A3F1-010T50KG-B"
+    decoded = decode_diagnostic_code(code)
+    assert decoded.version == "0.1.6"
+    assert decoded.detail is DiagnosticDetail.IDENTITY_EVIDENCE_MISSING
 
 
 def test_reported_v013_session_prompt_code_decodes_without_sensitive_context() -> None:
@@ -126,6 +143,15 @@ def test_every_error_identifier_is_stable_and_round_trips() -> None:
 
     assert len(set(codes.values())) == len(ErrorCode)
     assert all(decode_diagnostic_code(code).error_code is error for error, code in codes.items())
+
+
+def test_identity_detail_identifiers_fill_the_reserved_schema_values() -> None:
+    assert {
+        DiagnosticDetail.IDENTITY_EVIDENCE_MISSING: 12,
+        DiagnosticDetail.IDENTITY_SKU_UNSUPPORTED: 13,
+        DiagnosticDetail.IDENTITY_FAMILY_CONFLICT: 14,
+        DiagnosticDetail.IDENTITY_SKU_CONFLICT: 15,
+    }.items() <= diagnostic_module._DETAIL_TO_ID.items()
 
 
 @pytest.mark.parametrize("phase", tuple(DiagnosticPhase))
@@ -231,6 +257,10 @@ def _failed_result(target: str, message: str) -> DeviceResult:
 def test_result_code_is_independent_of_identifiers_and_messages() -> None:
     first = _failed_result("192.0.2.10", "operator secret edge-a")
     second = _failed_result("198.51.100.20", "different account and hostname")
+    first.model = "Aruba 2930F 24G PoE+ 4SFP+"
+    first.sku = "JL255A"
+    second.model = "Aruba 2930F VSF"
+    second.sku = "JL253A, JL256A"
 
     assert diagnostic_code_for_result(first, version="0.1.3") == diagnostic_code_for_result(
         second, version="0.1.3"
@@ -240,6 +270,7 @@ def test_result_code_is_independent_of_identifiers_and_messages() -> None:
     assert "192.0.2.10" not in code
     assert "operator" not in code
     assert "secret" not in code
+    assert "JL255A" not in code
 
 
 def test_success_and_expected_cancellation_have_no_code() -> None:

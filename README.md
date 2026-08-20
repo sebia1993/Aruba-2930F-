@@ -4,7 +4,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 수집하는 Windows용 GUI 도구입니다. 장비 설정을 변경하지 않으며, 수집 전에
 항상 `no page`를 적용해 수동으로 페이지를 넘기지 않고 한 번에 백업합니다.
 
-> **릴리즈 상태:** v0.1.5는 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
+> **릴리즈 상태:** v0.1.6은 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
 > 로컬 파일 시스템을 사용하며, 실제 Aruba 2930F에서의 동작을 증명하지는
 > 않습니다. 현장 도입 전 별도 검증이 필요합니다.
 
@@ -14,7 +14,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 - 공통 SSH 계정과 선택적 Enable 암호 사용(메모리에만 유지)
 - 최초 접속 시 SSH 서버 키의 SHA-256 장비 지문 일괄 검토
 - 승인된 SSH 장비 지문 변경 시 연결 차단
-- Aruba 2930F 모델/SKU를 확인한 뒤에만 `show running-config` 실행
+- 두 장비 정보 명령에서 Aruba 2930F 계열을 확인한 뒤에만 `show running-config` 실행
 - 장비별 UTF-8 TXT 파일과 실행 결과 `result.xlsx` 생성
 - 5/15/30초 지연을 둔 최대 4라운드 transient 재시도
 - 재시도 소진 장비만 새 실행으로 다시 수집하는 수동 재시도
@@ -25,13 +25,13 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 ## 다운로드와 실행
 
 1. GitHub Releases에서
-   `Aruba2930FConfigBackup_v0.1.5_windows_x64.zip`과 같은 이름의
+   `Aruba2930FConfigBackup_v0.1.6_windows_x64.zip`과 같은 이름의
    `.sha256` 파일을 내려받습니다.
 2. PowerShell에서 해시를 확인합니다.
 
    ```powershell
-   Get-FileHash .\Aruba2930FConfigBackup_v0.1.5_windows_x64.zip -Algorithm SHA256
-   Get-Content .\Aruba2930FConfigBackup_v0.1.5_windows_x64.zip.sha256
+   Get-FileHash .\Aruba2930FConfigBackup_v0.1.6_windows_x64.zip -Algorithm SHA256
+   Get-Content .\Aruba2930FConfigBackup_v0.1.6_windows_x64.zip.sha256
    ```
 
 3. ZIP 전체를 쓰기 가능한 로컬 폴더에 압축 해제합니다. ZIP 안의 EXE만
@@ -70,7 +70,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 3. `no page` 실행과 CLI 응답/프롬프트 검증
 4. 터미널 폭 511 설정
 5. `show version`, `show modules`
-6. Aruba 2930F 모델/SKU 검증
+6. `show version`과 `show modules`를 함께 사용한 Aruba 2930F 계열 검증
 7. `show running-config` 한 번 실행
 8. 최종 프롬프트·잔여 페이저·출력 한도 검증 후 파일 저장
 
@@ -79,6 +79,14 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 재시도 시에도 `no page`를 다시 적용합니다. 비정상적으로 남은 페이지 표시를
 제한적으로 처리하지만 시간, 20 MiB 또는 250,000행 한도를 넘으면 실패로
 기록합니다.
+
+`show version` 응답은 필수지만 모델명이나 SKU가 그 응답에 직접 없어도 됩니다.
+두 명령 중 하나에서 공식 2930F SKU를 찾으면 정확한 모델로 기록하고, SKU 없이
+`2930F` 계열 표기만 확인되면 `Aruba 2930F`로 수집합니다. 여러 공식 SKU가
+나오면 혼합 구성을 지원하는 2930F VSF로 처리해 정렬된 SKU 목록을 기록합니다.
+다른 장비 계열, 미지원 섀시 SKU 또는 상충하는 명시적 SKU 증거는 설정을 읽기
+전에 차단합니다. `show modules`에 함께 나오는 모듈·트랜시버 부품 번호는 섀시
+SKU로 사용하지 않습니다.
 
 ArubaOS-Switch 로그인 배너의 ANSI/백스페이스 제어 문자를 정리하고
 `Press any key to continue`가 표시되면 Enter를 보낸 뒤 EXEC 프롬프트를
@@ -162,7 +170,7 @@ IP/자격증명을 제거한 짧은 설명만 기록합니다. 실패 진단 코
 | `AUTH_FAILED` | SSH 인증 실패 |
 | `ENABLE_FAILED` | Enable 전환 실패 |
 | `PAGING_SETUP_FAILED` | `no page` 적용 또는 검증 실패 |
-| `MODEL_UNSUPPORTED` | 지원 대상 Aruba 2930F가 아님 |
+| `MODEL_UNSUPPORTED` | 2930F 증거가 없거나 계열·섀시 SKU 증거가 충돌함 |
 | `COMMAND_TIMEOUT` | 명령 완료 시간 초과 |
 | `COMMAND_REJECTED` | 장비가 읽기 명령을 거부함 |
 | `PROMPT_PARSE_FAILED` | CLI 프롬프트를 안전하게 판별하지 못함 |
@@ -216,7 +224,7 @@ SSH 장비 지문, 진단 코드, 표의 결과와 오류 내용은 읽거나 �
 ## SSH 알고리즘 호환성
 
 일부 2930F는 SSH 서버 호스트 키로 `ssh-rsa` 서명을 사용하거나
-`diffie-hellman-group14-sha1` KEX만 허용합니다. v0.1.5는 이런 장비와의
+`diffie-hellman-group14-sha1` KEX만 허용합니다. 현재 릴리스는 이런 장비와의
 호환성을 위해 Paramiko 4.0.0을 고정합니다. 클라이언트와 장비가 더 강한
 알고리즘을 함께 지원하면 강한 알고리즘이 우선되며, 레거시 알고리즘은 필요한
 장비에서만 협상됩니다.
@@ -235,7 +243,7 @@ Paramiko 4.0.0의 SHA-1 RSA 허용은 저위험 보안 권고
 장비가 SHA-2 기반 SSH를 지원하도록 갱신되면 이 예외와 Paramiko 4 고정을 함께
 제거해야 합니다.
 
-## v0.1.5 범위 밖
+## v0.1.6 범위 밖
 
 - 예약 실행 및 서비스/에이전트 모드
 - Excel/CSV 장비 목록 가져오기
@@ -268,7 +276,7 @@ portable 패키지 빌드:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
-  -PythonPath C:\Python314\python.exe -Version 0.1.5
+  -PythonPath C:\Python314\python.exe -Version 0.1.6
 ```
 
 빌드는 `artifacts\release` 아래에 ZIP, SHA-256, CycloneDX SBOM을 만들고
@@ -287,7 +295,7 @@ verifies SSH host-key fingerprints, applies and validates `no page` before any
 UTF-8 text backups plus an Excel run report. Credentials and the device list are
 session-only. Transient failures use four non-blocking rounds (immediate, then
 5/15/30-second delays); exhausted devices can be manually rerun into a new run
-folder after credentials are re-entered. v0.1.5 is an unsigned prerelease
+folder after credentials are re-entered. v0.1.6 is an unsigned prerelease
 validated with mocks and local package checks, not with a live switch.
 
 ## 라이선스와 보안 제보

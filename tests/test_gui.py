@@ -315,6 +315,34 @@ def test_retry_wait_status_does_not_advance_attempt_before_next_connection(
 
 
 @pytest.mark.gui
+def test_family_only_model_does_not_render_missing_sku_as_none(
+    app: QApplication,
+    tmp_path: Path,
+) -> None:
+    window = MainWindow(service=FakeService(tmp_path))
+
+    window._on_worker_success(
+        {
+            "run_directory": tmp_path,
+            "results": (
+                {
+                    "target": {"ip": "192.0.2.22"},
+                    "status": "success",
+                    "model": "Aruba 2930F",
+                    "sku": None,
+                    "host_key_attempts": 1,
+                    "attempts": 1,
+                },
+            ),
+        }
+    )
+
+    row = window._row_by_target["192.0.2.22"]
+    assert window.result_table.item(row, 2).text() == "Aruba 2930F"
+    window.close()
+
+
+@pytest.mark.gui
 def test_terminal_failed_event_counts_as_completed_progress(app: QApplication) -> None:
     window = MainWindow(service=FakeService(Path.cwd()))
     window._target_count = 1

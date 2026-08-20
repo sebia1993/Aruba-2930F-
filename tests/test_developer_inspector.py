@@ -46,7 +46,7 @@ def _metadata(
 
 @pytest.fixture
 def inspector() -> DeveloperInspectorController:
-    controller = DeveloperInspectorController(_app(), "v0.1.5")
+    controller = DeveloperInspectorController(_app(), "v0.1.6")
     yield controller
     controller.close()
     _app().processEvents()
@@ -82,7 +82,7 @@ def test_f12_is_the_only_enable_path_and_each_controller_starts_off(
     monkeypatch.setenv("ARUBA2930F_UI_INSPECTOR", "1")
     host = QWidget()
     layout = QVBoxLayout(host)
-    controller = DeveloperInspectorController(app, "v0.1.5")
+    controller = DeveloperInspectorController(app, "v0.1.6")
     bar = controller.attach_host_layout(host, layout)
     f12_action = QAction(host)
     f12_action.setShortcut(QKeySequence("F12"))
@@ -130,7 +130,7 @@ def test_f12_is_the_only_enable_path_and_each_controller_starts_off(
         controller.close()
         host.close()
 
-    replacement = DeveloperInspectorController(app, "v0.1.5")
+    replacement = DeveloperInspectorController(app, "v0.1.6")
     try:
         assert replacement.enabled is False
     finally:
@@ -580,7 +580,7 @@ def test_request_copy_uses_only_fixed_metadata_and_leaves_user_fields_blank(
     inspector.register_widget(runtime_widget, metadata)
 
     expected = (
-        "프로그램 버전: v0.1.5\n"
+        "프로그램 버전: v0.1.6\n"
         "화면 위치: 설정 > 연결\n"
         "요소 이름: 연결 테스트 버튼\n"
         "UI 식별자: SETTINGS-CONNECTION-TEST\n"
@@ -590,7 +590,7 @@ def test_request_copy_uses_only_fixed_metadata_and_leaves_user_fields_blank(
         "원하는 변경:\n"
     )
     assert inspector.request_text(metadata) == expected
-    assert build_static_request_text(metadata, "v0.1.5") == expected
+    assert build_static_request_text(metadata, "v0.1.6") == expected
     assert "password" not in expected
     assert "192.0.2.33" not in expected
     assert metadata.source_path in expected

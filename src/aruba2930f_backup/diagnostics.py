@@ -89,6 +89,10 @@ _DETAIL_TO_ID = {
     DiagnosticDetail.VALUE_OR_TYPE_ERROR: 9,
     DiagnosticDetail.RUNTIME_ERROR: 10,
     DiagnosticDetail.MEMORY_ERROR: 11,
+    DiagnosticDetail.IDENTITY_EVIDENCE_MISSING: 12,
+    DiagnosticDetail.IDENTITY_SKU_UNSUPPORTED: 13,
+    DiagnosticDetail.IDENTITY_FAMILY_CONFLICT: 14,
+    DiagnosticDetail.IDENTITY_SKU_CONFLICT: 15,
 }
 _ID_TO_DETAIL = {identifier: detail for detail, identifier in _DETAIL_TO_ID.items()}
 

@@ -68,6 +68,17 @@ def test_modules_can_supply_sku_when_version_identifies_family() -> None:
     assert identity.sku == "JL256A"
 
 
+def test_modules_can_supply_jl255a_when_version_reports_only_software() -> None:
+    identity = validate_device_identity(
+        "Image stamp:\nAug 20 2026\nWC.16.10.0024\nBoot Image: Primary",
+        "Status and Counters - Module Information\nChassis: Aruba 2930F-24G-PoE+-4SFP+ JL255A",
+    )
+
+    assert identity.model == "Aruba 2930F 24G PoE+ 4SFP+"
+    assert identity.sku == "JL255A"
+    assert identity.software_version == "WC.16.10.0024"
+
+
 def test_show_version_exact_evidence_does_not_require_modules() -> None:
     identity = validate_device_identity("Aruba JL258A 2930F Switch")
 
@@ -75,25 +86,80 @@ def test_show_version_exact_evidence_does_not_require_modules() -> None:
 
 
 @pytest.mark.parametrize(
-    ("version", "modules"),
+    ("version", "modules", "expected_model"),
     [
-        ("ArubaOS-Switch WC.16.11.0025", "Chassis: 2930F JL253A"),
-        ("Aruba 2930F JL999A", ""),
-        ("Aruba 2930F JL999A", "Chassis: 2930F JL253A"),
-        ("Aruba 2930M JL253A", ""),
-        ("Aruba 2930F JL253A", "Chassis: 2930F JL254A"),
-        ("Aruba 2930F", ""),
+        ("Aruba 2930F Switch", "", "Aruba 2930F"),
+        ("ArubaOS-Switch WC.16.11.0025", "Chassis: Aruba 2930F", "Aruba 2930F"),
     ],
 )
-def test_strict_model_validation_rejects_ambiguous_or_conflicting_evidence(
+def test_family_marker_without_sku_is_accepted(
     version: str,
     modules: str,
+    expected_model: str,
+) -> None:
+    identity = validate_device_identity(version, modules)
+
+    assert identity.model == expected_model
+    assert identity.sku is None
+
+
+def test_mixed_official_skus_are_reported_as_vsf() -> None:
+    identity = validate_device_identity(
+        "ArubaOS-Switch WC.16.10.0024",
+        "Aruba JL255A 2930F-24G-PoE+-4SFP+ Switch\n"
+        "Aruba JL253A 2930F-24G-4SFP+ Switch\n"
+        "Aruba JL256A 2930F-48G-PoE+-4SFP+ Switch",
+    )
+
+    assert identity.model == "Aruba 2930F VSF"
+    assert identity.sku == "JL253A, JL255A, JL256A"
+
+
+def test_module_and_transceiver_part_numbers_are_not_chassis_conflicts() -> None:
+    identity = validate_device_identity(
+        "ArubaOS-Switch WC.16.10.0024",
+        "Chassis: Aruba 2930F-24G-PoE+-4SFP+ JL255A\n"
+        "A JL083A 4-port SFP+ expansion module\n"
+        "1 J9150D SFP+ transceiver",
+    )
+
+    assert identity.sku == "JL255A"
+
+
+@pytest.mark.parametrize(
+    ("version", "modules", "detail"),
+    [
+        ("", "Chassis: Aruba 2930F JL255A", DiagnosticDetail.IDENTITY_EVIDENCE_MISSING),
+        (
+            "ArubaOS-Switch WC.16.11.0025",
+            "",
+            DiagnosticDetail.IDENTITY_EVIDENCE_MISSING,
+        ),
+        ("Aruba 2930F JL999A", "", DiagnosticDetail.IDENTITY_SKU_UNSUPPORTED),
+        (
+            "Aruba 2930F JL999A",
+            "Chassis: Aruba 2930F JL253A",
+            DiagnosticDetail.IDENTITY_SKU_CONFLICT,
+        ),
+        ("Aruba 2930M JL253A", "", DiagnosticDetail.IDENTITY_FAMILY_CONFLICT),
+        (
+            "Aruba CX 6200F JL724A",
+            "Chassis: Aruba 2930F JL255A",
+            DiagnosticDetail.IDENTITY_FAMILY_CONFLICT,
+        ),
+    ],
+)
+def test_unsupported_identity_evidence_has_stable_diagnostic_detail(
+    version: str,
+    modules: str,
+    detail: DiagnosticDetail,
 ) -> None:
     with pytest.raises(CollectionFailure) as captured:
         validate_device_identity(version, modules)
 
     assert captured.value.code is ErrorCode.MODEL_UNSUPPORTED
     assert captured.value.transient is False
+    assert captured.value.diagnostic_detail is detail
 
 
 def test_cli_error_is_sanitized_and_rejected() -> None:

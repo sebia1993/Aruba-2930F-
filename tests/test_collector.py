@@ -288,6 +288,29 @@ def test_rejected_show_modules_is_warning_only_with_exact_version_evidence() -> 
     assert factory.sessions[0].calls.count("show running-config") == 1
 
 
+def test_rejected_show_modules_is_warning_only_with_family_evidence() -> None:
+    factory = ScriptedFactory(
+        lambda index, target: ScriptedSession(
+            target,
+            responses={"show version": "Aruba 2930F Switch\nWC.16.11.0025"},
+            failure_by_command={
+                "show modules": CollectionFailure(
+                    ErrorCode.COMMAND_REJECTED,
+                    "The device rejected 'show modules'.",
+                )
+            },
+        )
+    )
+
+    result = ArubaCollector(factory).collect_one(TARGET, CREDENTIALS)
+
+    assert result.status is DeviceStatus.SUCCESS
+    assert result.model == "Aruba 2930F"
+    assert result.sku is None
+    assert result.warnings == ("SHOW_MODULES_UNAVAILABLE",)
+    assert factory.sessions[0].calls.count("show running-config") == 1
+
+
 def test_rejected_modules_cannot_rescue_generic_version_output() -> None:
     factory = ScriptedFactory(
         lambda index, target: ScriptedSession(
@@ -305,7 +328,35 @@ def test_rejected_modules_cannot_rescue_generic_version_output() -> None:
     result = ArubaCollector(factory).collect_one(TARGET, CREDENTIALS)
 
     assert result.error_code is ErrorCode.MODEL_UNSUPPORTED
+    assert result.diagnostic_detail is DiagnosticDetail.IDENTITY_EVIDENCE_MISSING
+    assert result.diagnostic_code is not None
+    assert (
+        decode_diagnostic_code(result.diagnostic_code).detail
+        is DiagnosticDetail.IDENTITY_EVIDENCE_MISSING
+    )
     assert "show running-config" not in factory.sessions[0].calls
+
+
+def test_jl255a_from_modules_allows_exactly_one_running_config_read() -> None:
+    factory = ScriptedFactory(
+        lambda index, target: ScriptedSession(
+            target,
+            responses={
+                "show version": "Image stamp:\nWC.16.10.0024\nBoot Image: Primary",
+                "show modules": (
+                    "Status and Counters - Module Information\n"
+                    "Chassis: Aruba 2930F-24G-PoE+-4SFP+ JL255A"
+                ),
+            },
+        )
+    )
+
+    result = ArubaCollector(factory).collect_one(TARGET, CREDENTIALS)
+
+    assert result.status is DeviceStatus.SUCCESS
+    assert result.model == "Aruba 2930F 24G PoE+ 4SFP+"
+    assert result.sku == "JL255A"
+    assert factory.sessions[0].calls.count("show running-config") == 1
 
 
 def test_unsupported_model_is_blocked_before_running_config() -> None:
@@ -322,6 +373,7 @@ def test_unsupported_model_is_blocked_before_running_config() -> None:
     result = ArubaCollector(factory).collect_one(TARGET, CREDENTIALS)
 
     assert result.error_code is ErrorCode.MODEL_UNSUPPORTED
+    assert result.diagnostic_detail is DiagnosticDetail.IDENTITY_FAMILY_CONFLICT
     assert "show running-config" not in factory.sessions[0].calls
 
 

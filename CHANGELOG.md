@@ -5,6 +5,28 @@
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-20
+
+### 수정
+
+- 일반적인 `show version` 출력에 모델명이 없어도 `show modules`의 공식 섀시
+  J 번호를 함께 사용해 JL255A 같은 정상 2930F를 미지원 모델로 오인하지 않도록 수정
+- 공식 SKU 없이 `2930F` 계열 표기만 확인된 장비와 서로 다른 공식 SKU를 혼합한
+  2930F VSF를 정상 수집하고, VSF 결과에는 정렬된 SKU 목록을 표시
+- 모듈과 트랜시버 부품 번호를 섀시 SKU로 오인하지 않으면서 다른 장비 계열,
+  미지원 섀시 SKU와 상충하는 명시적 SKU 증거는 계속 차단
+
+### 추가
+
+- 모델 증거 없음, 미지원 SKU, 계열 충돌과 SKU 충돌을 코드만으로 구분하는
+  오프라인 진단 detail ID 12~15
+
+### 보안
+
+- SSH 장비 지문 고정, 정확한 EXEC 프롬프트, `no page`, 터미널 폭 511,
+  읽기 전용 명령 허용 목록과 모델 확인 전 설정 수집 금지 정책 유지
+- 새 모델 진단 detail에도 SKU, 모델명, IP, 계정과 명령 원문을 포함하지 않음
+
 ## [0.1.5] - 2026-08-20
 
 ### 수정
@@ -142,7 +164,8 @@
 - 자격증명과 장비 목록을 세션에만 유지하고 운영 로그에서 민감정보 제거
 - 실제 2930F 미검증 및 미서명 바이너리임을 사전릴리즈에 명시
 
-[Unreleased]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.2...v0.1.3

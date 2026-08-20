@@ -59,6 +59,10 @@ class DiagnosticDetail(StrEnum):
     VALUE_OR_TYPE_ERROR = "value_or_type_error"
     RUNTIME_ERROR = "runtime_error"
     MEMORY_ERROR = "memory_error"
+    IDENTITY_EVIDENCE_MISSING = "identity_evidence_missing"
+    IDENTITY_SKU_UNSUPPORTED = "identity_sku_unsupported"
+    IDENTITY_FAMILY_CONFLICT = "identity_family_conflict"
+    IDENTITY_SKU_CONFLICT = "identity_sku_conflict"
 
 
 class DeviceStatus(StrEnum):
@@ -215,7 +219,7 @@ class ApprovedHostKey:
 class DeviceIdentity:
     hostname: str | None
     model: str
-    sku: str
+    sku: str | None
     software_version: str | None = None
 
 

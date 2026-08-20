@@ -64,6 +64,7 @@ def test_result_workbook_has_expected_sheets_fields_and_formula_protection(tmp_p
     ]
     assert devices["A2"].value == "192.0.2.10"
     assert devices["B2"].value.startswith("'=")
+    assert devices["C2"].value == "Aruba 2930F / JL253A"
     assert devices["M2"].value == "A3F1-010EPMRC-3"
     assert devices["O2"].value.startswith("'+")
     assert devices["D2"].value == "success"
@@ -72,6 +73,32 @@ def test_result_workbook_has_expected_sheets_fields_and_formula_protection(tmp_p
     assert devices["G2"].value == 2
     assert workbook["Summary"]["B5"].value == 1
     assert not (tmp_path / "result.xlsx.part").exists()
+    workbook.close()
+
+
+def test_result_workbook_preserves_family_only_and_vsf_model_display(tmp_path: Path) -> None:
+    report_path = write_result_workbook(
+        tmp_path,
+        [
+            {
+                "target": {"ip": "192.0.2.10"},
+                "model": "Aruba 2930F",
+                "sku": None,
+                "status": "success",
+            },
+            {
+                "target": {"ip": "192.0.2.11"},
+                "model": "Aruba 2930F VSF",
+                "sku": "JL253A, JL255A",
+                "status": "success",
+            },
+        ],
+    )
+
+    workbook = load_workbook(report_path, data_only=True)
+    devices = workbook["Devices"]
+    assert devices["C2"].value == "Aruba 2930F"
+    assert devices["C3"].value == "Aruba 2930F VSF / JL253A, JL255A"
     workbook.close()
 
 
