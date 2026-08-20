@@ -61,12 +61,19 @@ class LoopbackArubaSSHServer:
     username = "fixture-operator"
     password = "test-password"
 
-    def __init__(self, *, legacy_algorithms_only: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        legacy_algorithms_only: bool = False,
+        login_banner: bool = False,
+    ) -> None:
         self.host_key = paramiko.RSAKey.generate(2048)
         self.legacy_algorithms_only = legacy_algorithms_only
+        self.login_banner = login_banner
         self.commands: list[str] = []
         self.auth_attempts: list[tuple[str, str]] = []
         self.pager_advances = 0
+        self.banner_advances = 0
         self.errors: list[str] = []
         self.port = 0
         self._listener: socket.socket | None = None
@@ -155,7 +162,12 @@ class LoopbackArubaSSHServer:
                 return
 
             channel.settimeout(0.1)
-            channel.sendall(self.prompt.encode("utf-8"))
+            initial_output = (
+                "\x1b[2JCopyright Hewlett Packard Enterprise\r\nPress any key to continue"
+                if self.login_banner
+                else self.prompt
+            )
+            channel.sendall(initial_output.encode("utf-8"))
             command_buffer = ""
             previous_was_cr = False
             waiting_for_pager = False
@@ -183,6 +195,9 @@ class LoopbackArubaSSHServer:
                         command = command_buffer.strip()
                         command_buffer = ""
                         if not command:
+                            if self.login_banner and self.banner_advances == 0:
+                                with self._lock:
+                                    self.banner_advances += 1
                             channel.sendall(self.prompt.encode("utf-8"))
                             continue
                         waiting_for_pager = self._respond(channel, command)

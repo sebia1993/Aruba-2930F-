@@ -30,6 +30,7 @@ DEVICE_HEADERS = (
     "Duration Seconds",
     "Config File",
     "SHA-256",
+    "Diagnostic Code",
     "Error Code",
     "Error Message",
 )
@@ -44,6 +45,7 @@ _LOG_ALLOWED_FIELDS = {
     "stage",
     "status",
     "error_code",
+    "diagnostic_code",
     "round",
     "attempt",
     "delay_seconds",
@@ -167,6 +169,7 @@ def _device_row(result: object) -> tuple[Any, ...]:
         _duration_seconds(result),
         _first(result, "config_path", "file_path", "stored.path"),
         _first(result, "sha256", "config_sha256", "stored.sha256"),
+        _first(result, "diagnostic_code"),
         _first(result, "error_code", "error.code"),
         _first(result, "error_message", "message", "error.message"),
     )
@@ -246,7 +249,7 @@ def write_result_workbook(
         devices_sheet.append(tuple(neutralize_excel_text(value) for value in _device_row(result)))
     _style_sheet(
         devices_sheet,
-        widths=(16, 24, 30, 18, 18, 18, 24, 21, 21, 18, 48, 66, 26, 54),
+        widths=(16, 24, 30, 18, 18, 18, 24, 21, 21, 18, 48, 66, 24, 26, 54),
     )
     for row in devices_sheet.iter_rows(min_row=2):
         row[7].number_format = "yyyy-mm-dd hh:mm:ss"

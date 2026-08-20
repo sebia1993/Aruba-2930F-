@@ -13,6 +13,7 @@ from aruba2930f_backup.models import (
     CollectionOptions,
     Credentials,
     DeviceTarget,
+    DiagnosticPhase,
     ErrorCode,
     HostKeyObservation,
 )
@@ -127,6 +128,140 @@ def test_explicit_setup_and_show_read_order(tmp_path) -> None:
     assert setup_commands == ["no page", "terminal width 511"]
     assert writes == ["show version\n"]
     assert output == "Aruba JL253A 2930F"
+
+
+def test_aruba_login_banner_is_advanced_and_control_codes_are_removed(tmp_path) -> None:
+    class BannerConnection(FakeConnection):
+        RETURN = "\n"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.ansi_escape_codes = False
+            self.banner_reads = [
+                "\x1b[2J" + ("x" * 50_000) + "Copyright Hewlett Packard Enterprise",
+                "Press any key to continue",
+                "\x1b[2Kedge-lab#",
+            ]
+
+        def read_until_pattern(self, *, pattern: str, read_timeout: float) -> str:
+            self.calls.append(("read_until_pattern", pattern, read_timeout))
+            return self.banner_reads.pop(0)
+
+        def find_prompt(self) -> str:
+            self.calls.append("find_prompt")
+            return "\x1b[2Kedge-labX\x08#"
+
+    connection = BannerConnection()
+    session = make_session(tmp_path, connection)
+
+    session.connect()
+
+    assert connection.ansi_escape_codes is True
+    assert session.get_prompt() == "edge-lab#"
+    assert connection.calls.count("find_prompt") == 1
+    assert ("write", "\n") in connection.calls
+    assert connection.banner_reads == []
+
+
+def test_login_banner_timeout_after_enter_has_specific_detail(tmp_path) -> None:
+    class ReadTimeout(Exception):
+        pass
+
+    class StuckBannerConnection(FakeConnection):
+        RETURN = "\n"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.reads = 0
+
+        def read_until_pattern(self, *, pattern: str, read_timeout: float) -> str:
+            del pattern, read_timeout
+            self.reads += 1
+            if self.reads == 1:
+                return "Copyright"
+            if self.reads == 2:
+                return "Press any key to continue"
+            raise ReadTimeout
+
+    session = make_session(tmp_path, StuckBannerConnection())
+
+    with pytest.raises(CollectionFailure) as captured:
+        session.connect()
+
+    assert captured.value.code is ErrorCode.PROMPT_PARSE_FAILED
+    assert captured.value.diagnostic_detail.value == "login_banner_pending"
+    assert captured.value.diagnostic_phase is DiagnosticPhase.SESSION_SETUP
+
+
+def test_prompt_read_error_has_specific_detail(tmp_path) -> None:
+    connection = FakeConnection()
+
+    class ReadTimeout(Exception):
+        pass
+
+    def fail_prompt() -> str:
+        raise ReadTimeout("raw device text must not cross the boundary")
+
+    connection.find_prompt = fail_prompt  # type: ignore[method-assign]
+    session = make_session(tmp_path, connection)
+
+    with pytest.raises(CollectionFailure) as captured:
+        session.connect()
+
+    assert captured.value.code is ErrorCode.PROMPT_PARSE_FAILED
+    assert captured.value.diagnostic_detail.value == "prompt_read_error"
+    assert captured.value.diagnostic_phase is DiagnosticPhase.SESSION_SETUP
+
+
+def test_setup_show_and_get_prompt_reuse_the_verified_prompt(tmp_path) -> None:
+    connection = FakeConnection({"show version": ["show version\nAruba JL253A 2930F\nedge-lab#"]})
+    session = make_session(tmp_path, connection)
+
+    session.connect()
+    prepare_session(session)
+    session.send_show("show version")
+    prompt = session.get_prompt()
+
+    assert prompt == "edge-lab#"
+    assert connection.calls.count("find_prompt") == 1
+
+
+def test_split_and_delayed_prompt_is_read_to_exact_completion(tmp_path) -> None:
+    connection = FakeConnection(
+        {
+            "show version": [
+                "show version\nAruba JL253A 2930F",
+                "",
+                "\nedge-",
+                "",
+                "lab#",
+            ]
+        }
+    )
+    session = make_session(tmp_path, connection)
+    session.connect()
+    prepare_session(session)
+
+    assert session.send_show("show version") == "Aruba JL253A 2930F"
+
+
+def test_setup_command_requires_the_exact_cached_prompt(tmp_path) -> None:
+    connection = FakeConnection()
+
+    def mismatched(command: str, **kwargs: Any) -> str:
+        del kwargs
+        return f"{command}\nedge-lab#\nother-device#"
+
+    connection.send_command = mismatched  # type: ignore[method-assign]
+    session = make_session(tmp_path, connection)
+    session.connect()
+
+    with pytest.raises(CollectionFailure) as captured:
+        session.disable_paging()
+
+    assert captured.value.code is ErrorCode.PAGING_SETUP_FAILED
+    assert captured.value.transient
+    assert captured.value.diagnostic_detail.value == "prompt_mismatch"
 
 
 def test_disable_paging_rejects_cli_error_and_does_not_hide_details(tmp_path) -> None:

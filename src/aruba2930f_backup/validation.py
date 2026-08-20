@@ -5,7 +5,13 @@ from __future__ import annotations
 import re
 from ipaddress import IPv4Address
 
-from .models import CollectionFailure, DeviceIdentity, DeviceTarget, ErrorCode
+from .models import (
+    CollectionFailure,
+    DeviceIdentity,
+    DeviceTarget,
+    DiagnosticDetail,
+    ErrorCode,
+)
 
 
 class InputValidationError(ValueError):
@@ -195,10 +201,18 @@ def hostname_from_prompt(prompt: str) -> str | None:
 def require_valid_prompt(prompt: str) -> str | None:
     hostname = hostname_from_prompt(prompt)
     if hostname is None:
+        clean = _ANSI_RE.sub("", prompt or "").strip()
+        if not clean:
+            detail = DiagnosticDetail.PROMPT_EMPTY
+        elif re.search(r"\([^\r\n]*\)[#>]$", clean):
+            detail = DiagnosticDetail.PROMPT_NON_EXEC_MODE
+        else:
+            detail = DiagnosticDetail.PROMPT_FORMAT
         raise CollectionFailure(
             ErrorCode.PROMPT_PARSE_FAILED,
             "The final device prompt could not be verified.",
             transient=True,
+            diagnostic_detail=detail,
         )
     return hostname
 

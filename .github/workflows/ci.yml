@@ -58,7 +58,7 @@ jobs:
 
       - name: Build and verify portable package
         shell: pwsh
-        run: ./build_windows.ps1 -PythonPath python -Version 0.1.2 -SkipValidation -UseCurrentEnvironment
+        run: ./build_windows.ps1 -PythonPath python -Version 0.1.3 -SkipValidation -UseCurrentEnvironment
 
       - name: Upload verified CI package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

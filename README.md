@@ -4,7 +4,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 수집하는 Windows용 GUI 도구입니다. 장비 설정을 변경하지 않으며, 수집 전에
 항상 `no page`를 적용해 수동으로 페이지를 넘기지 않고 한 번에 백업합니다.
 
-> **릴리즈 상태:** v0.1.2는 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
+> **릴리즈 상태:** v0.1.3은 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
 > 로컬 파일 시스템을 사용하며, 실제 Aruba 2930F에서의 동작을 증명하지는
 > 않습니다. 현장 도입 전 별도 검증이 필요합니다.
 
@@ -18,19 +18,19 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 - 장비별 UTF-8 TXT 파일과 실행 결과 `result.xlsx` 생성
 - 5/15/30초 지연을 둔 최대 4라운드 transient 재시도
 - 재시도 소진 장비만 새 실행으로 다시 수집하는 수동 재시도
-- 즉시 취소, 안정적인 오류 코드와 민감정보 없는 로그
+- 즉시 취소, 15자 오프라인 진단 코드와 민감정보 없는 로그
 - Python 설치가 필요 없는 Windows x64 portable ZIP 제공
 
 ## 다운로드와 실행
 
 1. GitHub Releases에서
-   `Aruba2930FConfigBackup_v0.1.2_windows_x64.zip`과 같은 이름의
+   `Aruba2930FConfigBackup_v0.1.3_windows_x64.zip`과 같은 이름의
    `.sha256` 파일을 내려받습니다.
 2. PowerShell에서 해시를 확인합니다.
 
    ```powershell
-   Get-FileHash .\Aruba2930FConfigBackup_v0.1.2_windows_x64.zip -Algorithm SHA256
-   Get-Content .\Aruba2930FConfigBackup_v0.1.2_windows_x64.zip.sha256
+   Get-FileHash .\Aruba2930FConfigBackup_v0.1.3_windows_x64.zip -Algorithm SHA256
+   Get-Content .\Aruba2930FConfigBackup_v0.1.3_windows_x64.zip.sha256
    ```
 
 3. ZIP 전체를 쓰기 가능한 로컬 폴더에 압축 해제합니다. ZIP 안의 EXE만
@@ -65,7 +65,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 모든 최초 연결과 재연결에서 다음 순서를 고정합니다.
 
 1. SSH 호스트 키 검증
-2. 로그인 및 선택적 Enable
+2. 로그인 배너 처리, EXEC 프롬프트 확인 및 선택적 Enable
 3. `no page` 실행과 CLI 응답/프롬프트 검증
 4. 터미널 폭 511 설정
 5. `show version`, `show modules`
@@ -78,6 +78,12 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 재시도 시에도 `no page`를 다시 적용합니다. 비정상적으로 남은 페이지 표시를
 제한적으로 처리하지만 시간, 20 MiB 또는 250,000행 한도를 넘으면 실패로
 기록합니다.
+
+ArubaOS-Switch 로그인 배너의 ANSI/백스페이스 제어 문자를 정리하고
+`Press any key to continue`가 표시되면 Enter를 보낸 뒤 EXEC 프롬프트를
+확인합니다. 최초 연결과 Enable 전환에서 확인한 정확한 프롬프트를 이후 명령에
+재사용하며, 명령 응답의 마지막 줄이 그 프롬프트와 일치할 때만 완료로
+인정합니다. `(config)#` 같은 비-EXEC 모드는 허용하지 않습니다.
 
 ## 지연 재시도 정책
 
@@ -120,8 +126,8 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 `result.xlsx`에는 `Summary`, `Devices` 시트가 있으며 장비 주소, 탐지된
 호스트명과 모델/SKU, 결과 상태, Host Key Attempts, Backup Attempts,
 Total Connection Attempts, 소요시간, 파일 경로/해시 및 민감정보를 제거한
-오류 정보가 들어갑니다. Summary는 성공, Retry Exhausted, 기타 실패와 취소를
-별도로 집계합니다.
+오류 정보와 `Diagnostic Code`가 들어갑니다. Summary는 성공,
+Retry Exhausted, 기타 실패와 취소를 별도로 집계합니다.
 
 승인한 호스트 키만 다음 사용자별 로컬 파일에 보관됩니다.
 
@@ -131,8 +137,9 @@ Total Connection Attempts, 소요시간, 파일 경로/해시 및 민감정보�
 
 장비 IP 목록, SSH 암호, Enable 암호, 원본 명령 출력은 `operation.jsonl`이나
 설정 파일에 저장하지 않습니다. 진단 로그에는 단계, 시도 횟수, 오류 코드와
-IP/자격증명을 제거한 짧은 설명만 기록합니다. 결과 TXT에는 장비 설정 자체가
-포함되므로 조직의 민감정보 보관 정책에 따라 보호하십시오.
+IP/자격증명을 제거한 짧은 설명만 기록합니다. 실패 진단 코드는 코드별 발생
+횟수만 기록하며 장비 식별자와 연결하지 않습니다. 결과 TXT에는 장비 설정
+자체가 포함되므로 조직의 민감정보 보관 정책에 따라 보호하십시오.
 
 ## 오류 코드
 
@@ -160,10 +167,30 @@ IP/자격증명을 제거한 짧은 설명만 기록합니다. 결과 TXT에는 
 transient 오류 코드가 함께 남으므로 실패 원인을 잃지 않습니다. 인증, 호스트
 키 변경, 모델 오류는 재시도하지 않습니다.
 
+## 오프라인 진단 코드
+
+실패 또는 재시도 소진 결과가 있으면 작업 종료 뒤
+`A3F1-XXXXXXXX-C` 형식의 15자 코드를 `코드 × 장비 수`로 묶어 표시합니다.
+**진단 코드 복사** 버튼을 누른 뒤, 사내에서 외부로 전달할 때는 이 코드만
+Codex에 전달하면 됩니다. 정상 완료와 사용자 취소에는 코드를 만들지 않습니다.
+앱 초기화, 작업 스레드 또는 Excel 작성 같은 실행 단위 오류도 가능한 경우
+같은 형식으로 표시합니다.
+
+진단 코드는 앱 버전, 처리 단계, 고정 오류 분류, 시도 횟수와 짧은 세부 분류만
+담습니다. IP, 포트, 호스트명, 계정, 경로, 오류 메시지, 장비 설정 원문은
+포함하지 않습니다. 이 코드는 암호화나 전자서명이 아니며, 비민감 오류 요약과
+입력 실수 확인용 검사 문자일 뿐입니다. 코드를 해석하는 유지관리자 CLI는
+다음처럼 여러 코드와 JSON 출력을 지원합니다.
+
+```powershell
+aruba2930f-diagnose A3F1-010EPMRC-3
+aruba2930f-diagnose --json A3F1-010EPMRC-3 A3F1-010C8W18-V
+```
+
 ## SSH 알고리즘 호환성
 
 일부 2930F는 SSH 서버 호스트 키로 `ssh-rsa` 서명을 사용하거나
-`diffie-hellman-group14-sha1` KEX만 허용합니다. v0.1.2는 이런 장비와의
+`diffie-hellman-group14-sha1` KEX만 허용합니다. v0.1.3은 이런 장비와의
 호환성을 위해 Paramiko 4.0.0을 고정합니다. 클라이언트와 장비가 더 강한
 알고리즘을 함께 지원하면 강한 알고리즘이 우선되며, 레거시 알고리즘은 필요한
 장비에서만 협상됩니다.
@@ -182,7 +209,7 @@ Paramiko 4.0.0의 SHA-1 RSA 허용은 저위험 보안 권고
 장비가 SHA-2 기반 SSH를 지원하도록 갱신되면 이 예외와 Paramiko 4 고정을 함께
 제거해야 합니다.
 
-## v0.1.2 범위 밖
+## v0.1.3 범위 밖
 
 - 예약 실행 및 서비스/에이전트 모드
 - Excel/CSV 장비 목록 가져오기
@@ -215,7 +242,7 @@ portable 패키지 빌드:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
-  -PythonPath C:\Python314\python.exe -Version 0.1.2
+  -PythonPath C:\Python314\python.exe -Version 0.1.3
 ```
 
 빌드는 `artifacts\release` 아래에 ZIP, SHA-256, CycloneDX SBOM을 만들고
@@ -234,7 +261,7 @@ verifies SSH host-key fingerprints, applies and validates `no page` before any
 UTF-8 text backups plus an Excel run report. Credentials and the device list are
 session-only. Transient failures use four non-blocking rounds (immediate, then
 5/15/30-second delays); exhausted devices can be manually rerun into a new run
-folder after credentials are re-entered. v0.1.2 is an unsigned prerelease
+folder after credentials are re-entered. v0.1.3 is an unsigned prerelease
 validated with mocks and local package checks, not with a live switch.
 
 ## 라이선스와 보안 제보

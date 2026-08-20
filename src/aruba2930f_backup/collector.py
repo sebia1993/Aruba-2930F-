@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from math import isfinite
 
+from .diagnostics import diagnostic_code_for_result, diagnostic_detail_for_exception
 from .hostkeys import HostKeyProbe, HostKeyStore, ParamikoHostKeyProbe
 from .models import (
     CollectionEvent,
@@ -22,6 +23,8 @@ from .models import (
     DeviceResult,
     DeviceStatus,
     DeviceTarget,
+    DiagnosticDetail,
+    DiagnosticPhase,
     ErrorCode,
     HostKeyCheck,
     HostKeyObservation,
@@ -419,6 +422,7 @@ class ArubaCollector:
 
         for attempt in (attempt_number,):
             attempt_warnings: list[str] = []
+            failure_phase = DiagnosticPhase.CONNECT_AUTH
             if cancellation.is_set():
                 result = _cancelled_result(target, attempts=attempt - 1, started_at=started_at)
                 _emit(
@@ -441,11 +445,13 @@ class ArubaCollector:
                 session.connect()
                 _raise_if_cancelled(cancellation)
                 if credentials.enable_secret:
+                    failure_phase = DiagnosticPhase.SESSION_SETUP
                     _stage(on_event, target, CollectionStage.ENABLING, attempt)
                     session.enter_enable()
                     _raise_if_cancelled(cancellation)
 
                 # Security/order invariant: no show command may move above these calls.
+                failure_phase = DiagnosticPhase.SESSION_SETUP
                 _stage(on_event, target, CollectionStage.DISABLING_PAGING, attempt)
                 session.disable_paging()
                 _raise_if_cancelled(cancellation)
@@ -453,6 +459,7 @@ class ArubaCollector:
                 session.set_terminal_width()
                 _raise_if_cancelled(cancellation)
 
+                failure_phase = DiagnosticPhase.DEVICE_IDENTITY
                 _stage(on_event, target, CollectionStage.READING_VERSION, attempt)
                 version_output = session.send_show("show version", cancel_event=cancellation)
                 _raise_if_cancelled(cancellation)
@@ -478,6 +485,7 @@ class ArubaCollector:
                 _stage(on_event, target, CollectionStage.VALIDATING_MODEL, attempt)
                 identity = validate_device_identity(version_output, modules_output)
 
+                failure_phase = DiagnosticPhase.CONFIG_COLLECTION
                 _stage(on_event, target, CollectionStage.READING_CONFIG, attempt)
                 config_output = session.send_show("show running-config", cancel_event=cancellation)
                 _raise_if_cancelled(cancellation)
@@ -521,6 +529,11 @@ class ArubaCollector:
                 )
                 return _AttemptOutcome(result)
             except CollectionFailure as exc:
+                resolved_phase = (
+                    exc.diagnostic_phase
+                    if exc.diagnostic_phase is not DiagnosticPhase.UNKNOWN
+                    else failure_phase
+                )
                 if exc.code is ErrorCode.CANCELLED or cancellation.is_set():
                     result = _cancelled_result(target, attempts=attempt, started_at=started_at)
                     _emit(
@@ -543,6 +556,8 @@ class ArubaCollector:
                         exc.code,
                         exc.safe_message,
                         None,
+                        failure_phase=resolved_phase,
+                        diagnostic_detail=exc.diagnostic_detail,
                     )
                     _emit(
                         on_event,
@@ -571,9 +586,11 @@ class ArubaCollector:
                         message,
                         on_event,
                         status=status,
+                        failure_phase=resolved_phase,
+                        diagnostic_detail=exc.diagnostic_detail,
                     )
                 )
-            except Exception:
+            except Exception as exc:
                 return _AttemptOutcome(
                     _failed_result(
                         target,
@@ -582,6 +599,8 @@ class ArubaCollector:
                         ErrorCode.UNEXPECTED_ERROR,
                         "An unexpected internal error stopped collection.",
                         on_event,
+                        failure_phase=failure_phase,
+                        diagnostic_detail=diagnostic_detail_for_exception(exc),
                     )
                 )
             finally:
@@ -741,6 +760,8 @@ def _failed_result(
     callback: EventCallback | None,
     *,
     status: DeviceStatus = DeviceStatus.FAILED,
+    failure_phase: DiagnosticPhase = DiagnosticPhase.UNKNOWN,
+    diagnostic_detail: DiagnosticDetail = DiagnosticDetail.NONE,
 ) -> DeviceResult:
     finished = datetime.now(UTC)
     result = DeviceResult(
@@ -752,7 +773,10 @@ def _failed_result(
         duration_seconds=(finished - started_at).total_seconds(),
         error_code=error_code,
         error_message=message,
+        failure_phase=failure_phase,
+        diagnostic_detail=diagnostic_detail,
     )
+    result.diagnostic_code = diagnostic_code_for_result(result)
     _emit(
         callback,
         CollectionEvent(

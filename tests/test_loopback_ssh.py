@@ -99,6 +99,33 @@ def test_production_ssh_stack_supports_legacy_2930f_algorithms(tmp_path) -> None
         assert server.errors == []
 
 
+def test_production_ssh_stack_advances_aruba_login_banner(tmp_path) -> None:
+    with LoopbackArubaSSHServer(login_banner=True) as server:
+        target = DeviceTarget("127.0.0.1", server.port)
+        store = HostKeyStore(tmp_path / "known_hosts.json")
+        collector = ArubaCollector(host_key_store=store)
+        options = CollectionOptions(
+            concurrency=1,
+            max_attempts=1,
+            connect_timeout_seconds=3,
+            command_timeout_seconds=5,
+        )
+
+        checks = collector.probe_host_keys([target], options=options)
+        collector.approve_host_keys(checks)
+        result = collector.collect_one(
+            target,
+            Credentials(server.username, server.password),
+            options=options,
+        )
+
+        assert result.status is DeviceStatus.SUCCESS
+        assert result.hostname == "edge-lab"
+        assert server.banner_advances == 1
+        assert wait_for(lambda: "show running-config" in server.commands)
+        assert server.errors == []
+
+
 def test_changed_loopback_key_is_blocked_before_authentication(tmp_path) -> None:
     """Prove the authenticated transport pins the reviewed key before credentials."""
 

@@ -5,6 +5,32 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-20
+
+### 추가
+
+- 실패 단계, 고정 오류 ID, 시도 횟수와 세부 분류를 40비트 payload로 담고
+  Crockford Base32 및 CRC-5/EPC 검사 문자를 사용하는 15자 오프라인 진단 코드
+- 실패 코드를 장비 식별자 없이 집계하는 완료 팝업과 `진단 코드 복사` 버튼
+- `result.xlsx`의 `Diagnostic Code` 열, `operation.jsonl`의 코드별 발생 횟수,
+  복수 코드와 JSON 출력을 지원하는 유지관리자 진단 CLI
+- 앱 초기화, 작업 스레드, 설정/Excel 저장 오류를 위한 실행 단계 및 치명적 오류 코드
+
+### 수정
+
+- ArubaOS-Switch 로그인 배너의 ANSI/백스페이스 문자를 정리하고
+  `Press any key to continue`를 제한 시간 안에 해제하도록 SSH 초기화 보완
+- 최초 연결과 Enable 전환에서 확인한 EXEC 프롬프트를 캐시하고, 이후 설정 및
+  show 명령에서 추가 프롬프트 조회 없이 응답 마지막의 정확한 일치만 검증
+- `(config)#` 같은 비-EXEC 모드와 프롬프트 불일치를 계속 거부하면서
+  `no page` 이전에는 show 명령을 보내지 않는 순서 보존
+
+### 보안
+
+- 진단 코드와 집계 로그에 IP, 포트, 호스트명, 계정, 경로, 오류 원문 또는 설정
+  원문을 포함하지 않도록 고정하고, 코드가 암호화나 전자서명이 아님을 문서화
+- 장비 설정 변경 명령 및 실제 장비 테스트 없이 mock과 loopback SSH로 호환 경로 검증
+
 ## [0.1.2] - 2026-08-20
 
 ### 수정
@@ -71,7 +97,8 @@
 - 자격증명과 장비 목록을 세션에만 유지하고 운영 로그에서 민감정보 제거
 - 실제 2930F 미검증 및 미서명 바이너리임을 사전릴리즈에 명시
 
-[Unreleased]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sebia1993/Aruba-2930F-/releases/tag/v0.1.0

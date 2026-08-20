@@ -40,14 +40,46 @@ def _smoke_test() -> int:
     return 0
 
 
+def _show_fatal_diagnostic(code: str) -> int:
+    message = (
+        f"프로그램을 시작하지 못했습니다.\n\n진단 코드: {code}\n\n이 코드만 Codex에 전달하세요."
+    )
+    print(message, file=sys.stderr)
+    try:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+
+        app = QApplication.instance() or QApplication([])
+        QMessageBox.critical(None, "Aruba 2930F 백업 오류", message)
+        app.processEvents()
+    except Exception:
+        if sys.platform == "win32":
+            try:
+                import ctypes
+
+                ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
+                    None,
+                    message,
+                    "Aruba 2930F 백업 오류",
+                    0x10,
+                )
+            except Exception:
+                pass
+    return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.smoke_test:
-        return _smoke_test()
+    try:
+        if args.smoke_test:
+            return _smoke_test()
 
-    from .gui import run_gui
+        from .gui import run_gui
 
-    return run_gui()
+        return run_gui()
+    except Exception as exc:
+        from .diagnostics import diagnostic_code_for_exception
+
+        return _show_fatal_diagnostic(diagnostic_code_for_exception(exc))
 
 
 if __name__ == "__main__":

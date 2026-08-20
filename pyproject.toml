@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aruba2930f-config-backup"
-version = "0.1.2"
+version = "0.1.3"
 description = "Secure Windows GUI for batch Aruba 2930F running-config backups over SSH"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
@@ -27,6 +27,7 @@ dependencies = [
 
 [project.scripts]
 aruba2930f-backup = "aruba2930f_backup.__main__:main"
+aruba2930f-diagnose = "aruba2930f_backup.diagnostics:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

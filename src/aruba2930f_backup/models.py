@@ -35,6 +35,32 @@ class ErrorCode(StrEnum):
     UNEXPECTED_ERROR = "UNEXPECTED_ERROR"
 
 
+class DiagnosticPhase(StrEnum):
+    APP = "app"
+    HOST_KEY = "host_key"
+    CONNECT_AUTH = "connect_auth"
+    SESSION_SETUP = "session_setup"
+    DEVICE_IDENTITY = "device_identity"
+    CONFIG_COLLECTION = "config_collection"
+    REPORT_STORAGE = "report_storage"
+    UNKNOWN = "unknown"
+
+
+class DiagnosticDetail(StrEnum):
+    NONE = "none"
+    LOGIN_BANNER_PENDING = "login_banner_pending"
+    PROMPT_EMPTY = "prompt_empty"
+    PROMPT_FORMAT = "prompt_format"
+    PROMPT_NON_EXEC_MODE = "prompt_non_exec_mode"
+    PROMPT_MISMATCH = "prompt_mismatch"
+    PROMPT_READ_ERROR = "prompt_read_error"
+    IMPORT_ERROR = "import_error"
+    OS_ERROR = "os_error"
+    VALUE_OR_TYPE_ERROR = "value_or_type_error"
+    RUNTIME_ERROR = "runtime_error"
+    MEMORY_ERROR = "memory_error"
+
+
 class DeviceStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
@@ -80,11 +106,15 @@ class CollectionFailure(Exception):
         message: str,
         *,
         transient: bool = False,
+        diagnostic_phase: DiagnosticPhase = DiagnosticPhase.UNKNOWN,
+        diagnostic_detail: DiagnosticDetail = DiagnosticDetail.NONE,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.safe_message = message
         self.transient = transient
+        self.diagnostic_phase = diagnostic_phase
+        self.diagnostic_detail = diagnostic_detail
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +249,9 @@ class DeviceResult:
     error_message: str = ""
     warnings: tuple[str, ...] = ()
     host_key_attempts: int = 0
+    failure_phase: DiagnosticPhase = DiagnosticPhase.UNKNOWN
+    diagnostic_detail: DiagnosticDetail = DiagnosticDetail.NONE
+    diagnostic_code: str | None = None
 
     @property
     def succeeded(self) -> bool:

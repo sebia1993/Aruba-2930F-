@@ -28,6 +28,7 @@ def test_result_workbook_has_expected_sheets_fields_and_formula_protection(tmp_p
         "finished_at": started + timedelta(seconds=2),
         "config_path": tmp_path / "edge.txt",
         "config_sha256": "a" * 64,
+        "diagnostic_code": "A3F1-010EPMRC-3",
         "error_code": "",
         "error_message": "+untrusted formula text",
     }
@@ -57,12 +58,14 @@ def test_result_workbook_has_expected_sheets_fields_and_formula_protection(tmp_p
         "Duration Seconds",
         "Config File",
         "SHA-256",
+        "Diagnostic Code",
         "Error Code",
         "Error Message",
     ]
     assert devices["A2"].value == "192.0.2.10"
     assert devices["B2"].value.startswith("'=")
-    assert devices["N2"].value.startswith("'+")
+    assert devices["M2"].value == "A3F1-010EPMRC-3"
+    assert devices["O2"].value.startswith("'+")
     assert devices["D2"].value == "success"
     assert devices["E2"].value == 1
     assert devices["F2"].value == 1
@@ -83,6 +86,7 @@ def test_jsonl_logger_allowlists_fields_and_redacts_sensitive_values(tmp_path: P
         stage="connecting",
         status="failed",
         error_code="TCP_TIMEOUT",
+        diagnostic_code="A3F1-010EPMRC-3",
         message="operator at 192.0.2.10 edge-switch secret-password\nnext line",
         ip="192.0.2.10",
         password="secret-password",
@@ -98,6 +102,7 @@ def test_jsonl_logger_allowlists_fields_and_redacts_sensitive_values(tmp_path: P
     assert "edge-switch" not in encoded
     assert "raw_output" not in record
     assert "password" not in record
+    assert record["diagnostic_code"] == "A3F1-010EPMRC-3"
     assert record["message"].count("<redacted") >= 4
 
 

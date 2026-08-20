@@ -60,3 +60,27 @@ def test_default_entrypoint_delegates_to_gui(monkeypatch: object) -> None:
     monkeypatch.setattr(gui, "run_gui", lambda: 17)  # type: ignore[attr-defined]
 
     assert entrypoint.main([]) == 17
+
+
+def test_fatal_smoke_error_is_converted_to_diagnostic_code(monkeypatch: object) -> None:
+    import aruba2930f_backup.diagnostics as diagnostics
+
+    captured: list[str] = []
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        entrypoint,
+        "_smoke_test",
+        lambda: (_ for _ in ()).throw(MemoryError()),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        diagnostics,
+        "diagnostic_code_for_exception",
+        lambda _exc: "A3F1-0100000B-R",
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        entrypoint,
+        "_show_fatal_diagnostic",
+        lambda code: captured.append(code) or 1,
+    )
+
+    assert entrypoint.main(["--smoke-test"]) == 1
+    assert captured == ["A3F1-0100000B-R"]

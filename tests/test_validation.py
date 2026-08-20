@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from aruba2930f_backup.models import CollectionFailure, ErrorCode
+from aruba2930f_backup.models import CollectionFailure, DiagnosticDetail, ErrorCode
 from aruba2930f_backup.validation import (
     ARUBA_2930F_MODELS,
     InputValidationError,
@@ -139,8 +139,24 @@ def test_output_bounds_check_bytes_and_lines() -> None:
 
 def test_prompt_hostname_requires_single_exec_prompt() -> None:
     assert hostname_from_prompt("edge-lab#") == "edge-lab"
+    assert hostname_from_prompt("edge-lab>") == "edge-lab"
     assert hostname_from_prompt("edge-lab(config)#") is None
     assert hostname_from_prompt("bad prompt#") is None
     with pytest.raises(CollectionFailure) as captured:
         require_valid_prompt("not a prompt")
     assert captured.value.code is ErrorCode.PROMPT_PARSE_FAILED
+
+
+@pytest.mark.parametrize(
+    ("prompt", "detail"),
+    (
+        ("", DiagnosticDetail.PROMPT_EMPTY),
+        ("edge-lab(config)#", DiagnosticDetail.PROMPT_NON_EXEC_MODE),
+        ("bad prompt#", DiagnosticDetail.PROMPT_FORMAT),
+    ),
+)
+def test_prompt_failure_details_are_stable(prompt: str, detail: DiagnosticDetail) -> None:
+    with pytest.raises(CollectionFailure) as captured:
+        require_valid_prompt(prompt)
+
+    assert captured.value.diagnostic_detail is detail

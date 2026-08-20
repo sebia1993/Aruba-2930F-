@@ -6,6 +6,7 @@ import ipaddress
 import sys
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
@@ -41,6 +42,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .diagnostics import (
+    diagnostic_code_for_exception,
+    diagnostic_code_for_result,
+    diagnostic_detail_for_exception,
+)
 from .models import (
     CollectionFailure,
     CollectionOptions,
@@ -49,6 +55,8 @@ from .models import (
     DeviceResult,
     DeviceStatus,
     DeviceTarget,
+    DiagnosticDetail,
+    DiagnosticPhase,
     ErrorCode,
     HostKeyCheck,
     HostKeyTrustState,
@@ -196,7 +204,7 @@ class CollectorBackupService:
         status: DeviceStatus = DeviceStatus.FAILED,
     ) -> list[DeviceResult]:
         now = datetime.now().astimezone()
-        return [
+        results = [
             DeviceResult(
                 target=check.target,
                 status=status,
@@ -207,9 +215,13 @@ class CollectorBackupService:
                 duration_seconds=0.0,
                 error_code=code or check.error_code or ErrorCode.HOST_KEY_REJECTED,
                 error_message=message or check.message,
+                failure_phase=DiagnosticPhase.HOST_KEY,
             )
             for check in checks
         ]
+        for result in results:
+            result.diagnostic_code = diagnostic_code_for_result(result)
+        return results
 
     @staticmethod
     def _cancelled_results(
@@ -267,8 +279,11 @@ class CollectorBackupService:
                     )
                     result.config_path = None
                     config_path = None
+                    result.failure_phase = DiagnosticPhase.REPORT_STORAGE
+                    result.diagnostic_detail = DiagnosticDetail.OS_ERROR
                 finally:
                     result.config_text = None
+            result.diagnostic_code = diagnostic_code_for_result(result)
             records.append(self._report_record(result, config_path))
         return records
 
@@ -540,19 +555,50 @@ class CollectorBackupService:
         results = [by_endpoint[target.endpoint] for target in targets]
 
         records = self._save_results(run_directory, results)
+        diagnostic_counts = Counter(
+            str(record["diagnostic_code"]) for record in records if record.get("diagnostic_code")
+        )
+        for diagnostic_code, count in sorted(diagnostic_counts.items()):
+            logger.log(
+                phase="diagnostic",
+                stage="summary",
+                status="failed",
+                diagnostic_code=diagnostic_code,
+                count=count,
+                message="Offline diagnostic code summary.",
+            )
         finished_at = datetime.now().astimezone()
         cancelled = callbacks.cancel_event.is_set() or any(
             result.status is DeviceStatus.CANCELLED for result in results
         )
-        report_path = write_result_workbook(
-            run_directory,
-            records,
-            summary=ReportSummary(
-                started_at=started_at,
-                finished_at=finished_at,
-                cancelled=cancelled,
-            ),
-        )
+        try:
+            report_path = write_result_workbook(
+                run_directory,
+                records,
+                summary=ReportSummary(
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    cancelled=cancelled,
+                ),
+            )
+        except Exception as exc:
+            failure = CollectionFailure(
+                ErrorCode.REPORT_WRITE_FAILED,
+                "The result workbook could not be written.",
+                diagnostic_phase=DiagnosticPhase.REPORT_STORAGE,
+                diagnostic_detail=diagnostic_detail_for_exception(exc),
+            )
+            with suppress(Exception):
+                logger.log(
+                    phase=DiagnosticPhase.REPORT_STORAGE,
+                    stage="failed",
+                    status="fatal_app",
+                    error_code=ErrorCode.REPORT_WRITE_FAILED,
+                    diagnostic_code=diagnostic_code_for_exception(failure),
+                    count=1,
+                    message="Result workbook write failed.",
+                )
+            raise failure from exc
         return BackupOutcome(
             run_directory=run_directory,
             results=tuple(records),
@@ -571,7 +617,7 @@ class _ServiceWorker(QObject):
     event_received = Signal(object)
     host_keys_requested = Signal(object, object)
     succeeded = Signal(object)
-    failed = Signal(str)
+    failed = Signal(object)
     done = Signal()
 
     def __init__(
@@ -603,11 +649,62 @@ class _ServiceWorker(QObject):
         try:
             outcome = self._service.run(self._request, callbacks)
         except Exception as exc:  # GUI boundary: show only the exception category.
-            self.failed.emit(type(exc).__name__)
+            self.failed.emit(
+                {
+                    "exception_name": type(exc).__name__,
+                    "diagnostic_code": diagnostic_code_for_exception(exc),
+                }
+            )
         else:
             self.succeeded.emit(outcome)
         finally:
             self.done.emit()
+
+
+class DiagnosticCodesDialog(QDialog):
+    """Non-blocking, identifier-free diagnostic code summary."""
+
+    def __init__(
+        self,
+        counts: dict[str, int],
+        *,
+        title: str = "진단 코드",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setObjectName("diagnosticCodesDialog")
+        self.setMinimumWidth(440)
+        separator = "\N{MULTIPLICATION SIGN}"
+        self.copy_text = "\n".join(
+            f"{code} {separator} {count}" for code, count in sorted(counts.items())
+        )
+
+        layout = QVBoxLayout(self)
+        explanation = QLabel(
+            "아래 코드만 Codex에 전달하세요. 장비 주소, 계정, 오류 원문은 코드에 포함되지 않습니다.",
+            self,
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+
+        codes = QLabel(self.copy_text, self)
+        codes.setObjectName("diagnosticCodesText")
+        codes.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        codes.setStyleSheet("font-family: Consolas, monospace; font-weight: 600;")
+        layout.addWidget(codes)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
+        self.copy_button = QPushButton("진단 코드 복사", self)
+        self.copy_button.setObjectName("copyDiagnosticCodesButton")
+        self.copy_button.clicked.connect(self._copy_codes)
+        buttons.addButton(self.copy_button, QDialogButtonBox.ButtonRole.ActionRole)
+        buttons.rejected.connect(self.close)
+        layout.addWidget(buttons)
+
+    @Slot()
+    def _copy_codes(self) -> None:
+        QApplication.clipboard().setText(self.copy_text)
 
 
 class HostKeyApprovalDialog(QDialog):
@@ -787,6 +884,9 @@ class MainWindow(QMainWindow):
         self._retry_exhausted_targets: tuple[str, ...] = ()
         self._target_count = 0
         self._pending_error: str | None = None
+        self._pending_error_code: str | None = None
+        self._pending_diagnostic_counts: dict[str, int] = {}
+        self._diagnostic_dialog: DiagnosticCodesDialog | None = None
         self._closing_after_cancel = False
         self._close_retry_scheduled = False
         self._run_finalize_pending = False
@@ -989,8 +1089,12 @@ class MainWindow(QMainWindow):
         if self._service is None:
             try:
                 self._service = build_default_service()
-            except Exception:
-                QMessageBox.critical(self, "시작할 수 없음", "백업 서비스를 초기화하지 못했습니다.")
+            except Exception as exc:
+                diagnostic_code = diagnostic_code_for_exception(exc)
+                self.status_label.setText(
+                    f"백업 서비스를 초기화하지 못했습니다 · 진단 코드 {diagnostic_code}"
+                )
+                self._show_diagnostic_codes({diagnostic_code: 1})
                 return
         try:
             request = self.build_request(targets_override=targets_override)
@@ -1010,6 +1114,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self._result_directory = None
         self._pending_error = None
+        self._pending_error_code = None
+        self._pending_diagnostic_counts.clear()
+        if self._diagnostic_dialog is not None:
+            self._diagnostic_dialog.close()
+            self._diagnostic_dialog = None
         self._cancel_event = threading.Event()
         self._set_running(True)
         self.status_label.setText(f"{self._target_count}대 백업을 준비하는 중…")
@@ -1155,6 +1264,7 @@ class MainWindow(QMainWindow):
         success_count = 0
         exhausted_count = 0
         other_failure_count = 0
+        diagnostic_counts: Counter[str] = Counter()
         for result in results:
             target = str(_first_value(result, "target.ip", "ip_address", "ip"))
             row = self._row_for_target(target)
@@ -1177,6 +1287,9 @@ class MainWindow(QMainWindow):
             self._set_attempt_cell(row, target)
             error = _first_value(result, "error_code", default="")
             message = _first_value(result, "error_message", default="")
+            diagnostic_code = str(_first_value(result, "diagnostic_code", default="") or "")
+            if diagnostic_code:
+                diagnostic_counts[diagnostic_code] += 1
             self._set_cell(row, 5, " - ".join(part for part in (str(error), str(message)) if part))
             self._completed_targets.add(target)
             if status == DeviceStatus.SUCCESS.value:
@@ -1187,6 +1300,7 @@ class MainWindow(QMainWindow):
             else:
                 other_failure_count += 1
         self._retry_exhausted_targets = tuple(exhausted_targets)
+        self._pending_diagnostic_counts = dict(diagnostic_counts)
         self.progress_bar.setValue(100)
         cancelled = bool(_first_value(outcome, "cancelled", default=False))
         prefix = "취소된 실행 결과 저장" if cancelled else "백업 완료"
@@ -1195,9 +1309,18 @@ class MainWindow(QMainWindow):
             f"기타 실패 {other_failure_count}대"
         )
 
-    @Slot(str)
-    def _on_worker_failure(self, exception_name: str) -> None:
-        self._pending_error = exception_name
+    @Slot(object)
+    def _on_worker_failure(self, failure: object) -> None:
+        if isinstance(failure, str):
+            self._pending_error = failure
+            self._pending_error_code = diagnostic_code_for_exception(RuntimeError())
+        else:
+            self._pending_error = str(_first_value(failure, "exception_name", default="Error"))
+            self._pending_error_code = str(
+                _first_value(failure, "diagnostic_code", default="") or ""
+            )
+        if self._pending_error_code:
+            self._pending_diagnostic_counts = {self._pending_error_code: 1}
         self.status_label.setText("백업 실행을 완료하지 못했습니다.")
 
     @Slot()
@@ -1236,14 +1359,27 @@ class MainWindow(QMainWindow):
         self.password_input.clear()
         self.enable_password_input.clear()
         if self._pending_error:
-            QMessageBox.critical(
-                self,
-                "백업 실패",
-                f"백업 처리 중 오류가 발생했습니다. 오류 유형: {self._pending_error}",
-            )
+            suffix = f" · 진단 코드 {self._pending_error_code}" if self._pending_error_code else ""
+            self.status_label.setText(f"백업 처리 중 오류가 발생했습니다{suffix}")
             self._pending_error = None
+            self._pending_error_code = None
+        if self._pending_diagnostic_counts:
+            self._show_diagnostic_codes(self._pending_diagnostic_counts)
+            self._pending_diagnostic_counts = {}
         if self._closing_after_cancel:
             self._schedule_close_retry()
+
+    def _show_diagnostic_codes(self, counts: dict[str, int]) -> None:
+        if self._diagnostic_dialog is not None:
+            self._diagnostic_dialog.close()
+        dialog = DiagnosticCodesDialog(counts, parent=self)
+        dialog.finished.connect(self._clear_diagnostic_dialog)
+        self._diagnostic_dialog = dialog
+        dialog.open()
+
+    @Slot(int)
+    def _clear_diagnostic_dialog(self, _result: int) -> None:
+        self._diagnostic_dialog = None
 
     def _cancel_thread_is_alive(self) -> bool:
         return self._cancel_thread is not None and self._cancel_thread.is_alive()

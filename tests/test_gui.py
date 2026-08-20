@@ -18,11 +18,13 @@ from PySide6.QtWidgets import QApplication
 from tests.fakes import ScriptedFactory
 
 from aruba2930f_backup.collector import ArubaCollector
+from aruba2930f_backup.diagnostics import decode_diagnostic_code, diagnostic_code_for_exception
 from aruba2930f_backup.gui import (
     BackupCallbacks,
     BackupOutcome,
     BackupRequest,
     CollectorBackupService,
+    DiagnosticCodesDialog,
     HostKeyApprovalDialog,
     MainWindow,
 )
@@ -33,6 +35,8 @@ from aruba2930f_backup.models import (
     DeviceResult,
     DeviceStatus,
     DeviceTarget,
+    DiagnosticDetail,
+    DiagnosticPhase,
     ErrorCode,
     HostKeyCheck,
     HostKeyObservation,
@@ -350,6 +354,89 @@ def test_collector_service_writes_config_report_and_sanitized_log(tmp_path: Path
     assert "enable-secret" not in log_text
 
 
+def test_workbook_write_failure_has_report_diagnostic_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_workbook(*args: object, **kwargs: object) -> Path:
+        del args, kwargs
+        raise OSError("/sensitive/output/path")
+
+    monkeypatch.setattr("aruba2930f_backup.gui.write_result_workbook", fail_workbook)
+    service = CollectorBackupService(FakeCollector())
+
+    with pytest.raises(CollectionFailure) as captured:
+        service.run(
+            BackupRequest(
+                targets=("192.0.2.10",),
+                port=22,
+                username="operator",
+                password="secret-password",
+                enable_password=None,
+                concurrency=1,
+                output_directory=tmp_path,
+            ),
+            BackupCallbacks(
+                on_event=lambda _event: None,
+                request_host_key_approval=lambda _checks: False,
+                cancel_event=threading.Event(),
+            ),
+        )
+
+    assert captured.value.code is ErrorCode.REPORT_WRITE_FAILED
+    assert captured.value.diagnostic_phase is DiagnosticPhase.REPORT_STORAGE
+    log_path = next(tmp_path.rglob("operation.jsonl"))
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "/sensitive/output/path" not in log_text
+    fatal_record = next(
+        json.loads(line)
+        for line in log_text.splitlines()
+        if json.loads(line).get("status") == "fatal_app"
+    )
+    assert fatal_record["diagnostic_code"]
+
+
+def test_config_write_failure_updates_device_result_and_diagnostic_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_config(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise OSError("/sensitive/device-config/path")
+
+    monkeypatch.setattr("aruba2930f_backup.gui.write_config_atomic", fail_config)
+    outcome = CollectorBackupService(FakeCollector()).run(
+        BackupRequest(
+            targets=("192.0.2.10",),
+            port=22,
+            username="operator",
+            password="secret-password",
+            enable_password=None,
+            concurrency=1,
+            output_directory=tmp_path,
+        ),
+        BackupCallbacks(
+            on_event=lambda _event: None,
+            request_host_key_approval=lambda _checks: False,
+            cancel_event=threading.Event(),
+        ),
+    )
+
+    result = outcome.results[0]
+    assert result["status"] is DeviceStatus.FAILED
+    assert result["error_code"] is ErrorCode.REPORT_WRITE_FAILED
+    assert result["failure_phase"] is DiagnosticPhase.REPORT_STORAGE
+    assert result["diagnostic_detail"] is DiagnosticDetail.OS_ERROR
+    code = str(result["diagnostic_code"])
+    decoded = decode_diagnostic_code(code)
+    assert decoded.phase is DiagnosticPhase.REPORT_STORAGE
+    assert decoded.error_code is ErrorCode.REPORT_WRITE_FAILED
+    assert "/sensitive/device-config/path" not in code
+    log_text = (outcome.run_directory / "operation.jsonl").read_text(encoding="utf-8")
+    assert "/sensitive/device-config/path" not in log_text
+    assert code in log_text
+
+
 def test_backup_request_repr_never_contains_secrets(tmp_path: Path) -> None:
     request = BackupRequest(
         targets=("192.0.2.10",),
@@ -454,6 +541,11 @@ def test_host_key_probe_failure_is_per_device_and_preserves_other_backup(tmp_pat
     assert first["error_code"] == ErrorCode.TCP_TIMEOUT
     assert first["host_key_attempts"] == 4
     assert first["attempts"] == 0
+    assert first["diagnostic_code"]
+    decoded = decode_diagnostic_code(str(first["diagnostic_code"]))
+    assert decoded.phase is DiagnosticPhase.HOST_KEY
+    assert decoded.host_key_attempts == 4
+    assert decoded.backup_attempts == 0
     assert second["target"]["ip"] == "192.0.2.11"
     assert second["status"] == DeviceStatus.SUCCESS
     assert second["host_key_attempts"] == 1
@@ -476,6 +568,59 @@ def test_host_key_probe_failure_is_per_device_and_preserves_other_backup(tmp_pat
     assert retry_log["attempt"] == 1
     assert retry_log["delay_seconds"] == 0.0
     assert retry_log["error_code"] == ErrorCode.TCP_TIMEOUT
+    diagnostic_log = next(
+        record
+        for record in (
+            json.loads(line)
+            for line in (outcome.run_directory / "operation.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        if record.get("diagnostic_code") == first["diagnostic_code"]
+    )
+    assert diagnostic_log["count"] == 1
+
+
+@pytest.mark.gui
+def test_diagnostic_dialog_aggregates_and_copies_codes(
+    app: QApplication,
+    tmp_path: Path,
+) -> None:
+    window = MainWindow(service=FakeService(tmp_path))
+    window.show()
+    code = diagnostic_code_for_exception(RuntimeError("must not be shown"), version="0.1.3")
+
+    window._pending_diagnostic_counts = {code: 2}
+    window._finalize_completed_run()
+    app.processEvents()
+
+    dialog = window._diagnostic_dialog
+    assert isinstance(dialog, DiagnosticCodesDialog)
+    expected = f"{code} \N{MULTIPLICATION SIGN} 2"
+    assert dialog.copy_text == expected
+    dialog.copy_button.click()
+    assert QApplication.clipboard().text() == expected
+    dialog.close()
+    window.close()
+
+
+@pytest.mark.gui
+def test_fatal_worker_code_remains_in_status_and_opens_dialog(
+    app: QApplication,
+    tmp_path: Path,
+) -> None:
+    window = MainWindow(service=FakeService(tmp_path))
+    window.show()
+    code = diagnostic_code_for_exception(RuntimeError("not serialized"), version="0.1.3")
+
+    window._on_worker_failure({"exception_name": "RuntimeError", "diagnostic_code": code})
+    window._finalize_completed_run()
+    app.processEvents()
+
+    assert code in window.status_label.text()
+    assert isinstance(window._diagnostic_dialog, DiagnosticCodesDialog)
+    window._diagnostic_dialog.close()
+    window.close()
 
 
 @pytest.mark.gui

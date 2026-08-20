@@ -8,6 +8,7 @@ import pytest
 from tests.fakes import MODULES_2930F, RUNNING_CONFIG, ScriptedFactory, ScriptedSession
 
 from aruba2930f_backup.collector import ArubaCollector
+from aruba2930f_backup.diagnostics import decode_diagnostic_code
 from aruba2930f_backup.hostkeys import HostKeyStore, sha256_fingerprint
 from aruba2930f_backup.models import (
     CollectionFailure,
@@ -16,6 +17,8 @@ from aruba2930f_backup.models import (
     Credentials,
     DeviceStatus,
     DeviceTarget,
+    DiagnosticDetail,
+    DiagnosticPhase,
     ErrorCode,
     HostKeyObservation,
     HostKeyTrustState,
@@ -234,7 +237,35 @@ def test_no_page_failure_prevents_every_show_command() -> None:
     result = ArubaCollector(factory).collect_one(TARGET, CREDENTIALS)
 
     assert result.error_code is ErrorCode.PAGING_SETUP_FAILED
+    assert result.failure_phase is DiagnosticPhase.SESSION_SETUP
+    assert result.diagnostic_code is not None
     assert not any(call.startswith("show ") for call in factory.sessions[0].calls)
+
+
+def test_prompt_failure_records_config_phase_detail_and_retry_count() -> None:
+    factory = ScriptedFactory(
+        lambda index, target: ScriptedSession(
+            target,
+            failure_by_command={
+                "get prompt": CollectionFailure(
+                    ErrorCode.PROMPT_PARSE_FAILED,
+                    "The final device prompt could not be verified.",
+                    transient=True,
+                    diagnostic_detail=DiagnosticDetail.PROMPT_FORMAT,
+                )
+            },
+        )
+    )
+
+    result = ArubaCollector(factory).collect_one(TARGET, CREDENTIALS, options=FAST_RETRY_OPTIONS)
+
+    assert result.status is DeviceStatus.RETRY_EXHAUSTED
+    assert result.failure_phase is DiagnosticPhase.CONFIG_COLLECTION
+    assert result.diagnostic_detail is DiagnosticDetail.PROMPT_FORMAT
+    assert result.diagnostic_code is not None
+    decoded = decode_diagnostic_code(result.diagnostic_code)
+    assert decoded.phase is DiagnosticPhase.CONFIG_COLLECTION
+    assert decoded.backup_attempts == 4
 
 
 def test_rejected_show_modules_is_warning_only_with_exact_version_evidence() -> None:

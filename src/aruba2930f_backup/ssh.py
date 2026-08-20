@@ -15,6 +15,8 @@ from .models import (
     CollectionOptions,
     Credentials,
     DeviceTarget,
+    DiagnosticDetail,
+    DiagnosticPhase,
     ErrorCode,
     HostKeyObservation,
 )
@@ -114,8 +116,10 @@ class NetmikoSSHSession:
         self._terminal_width_prepared = False
 
     def connect(self) -> None:
+        self._prompt = None
         self._paging_prepared = False
         self._terminal_width_prepared = False
+        established = False
         try:
             connection = self._connection_builder(
                 self.target,
@@ -125,11 +129,15 @@ class NetmikoSSHSession:
             )
             self._connection = connection
             connection.establish_connection()
-            connection.set_base_prompt()
-            self._prompt = _verified_exec_prompt(connection.find_prompt())
+            established = True
+            _prepare_aruba_login(connection, self._options.connect_timeout_seconds)
+            self._prompt = _read_verified_exec_prompt(connection)
         except Exception as exc:
             self.close()
-            raise _mapped_failure(exc, during="connect") from exc
+            failure = _mapped_failure(exc, during="prompt" if established else "connect")
+            if established and failure.diagnostic_phase is DiagnosticPhase.UNKNOWN:
+                failure.diagnostic_phase = DiagnosticPhase.SESSION_SETUP
+            raise failure from exc
 
     def enter_enable(self) -> None:
         connection = self._require_connection()
@@ -142,9 +150,18 @@ class NetmikoSSHSession:
                     ErrorCode.ENABLE_FAILED,
                     "The privileged EXEC prompt was not reached.",
                 )
-            self._prompt = _verified_exec_prompt(connection.find_prompt())
         except Exception as exc:
-            raise _mapped_failure(exc, during="enable") from exc
+            failure = _mapped_failure(exc, during="enable")
+            if failure.diagnostic_phase is DiagnosticPhase.UNKNOWN:
+                failure.diagnostic_phase = DiagnosticPhase.SESSION_SETUP
+            raise failure from exc
+        try:
+            self._prompt = _read_verified_exec_prompt(connection)
+        except Exception as exc:
+            failure = _mapped_failure(exc, during="prompt")
+            if failure.diagnostic_phase is DiagnosticPhase.UNKNOWN:
+                failure.diagnostic_phase = DiagnosticPhase.SESSION_SETUP
+            raise failure from exc
 
     def disable_paging(self) -> None:
         try:
@@ -155,6 +172,12 @@ class NetmikoSSHSession:
             raise CollectionFailure(
                 ErrorCode.PAGING_SETUP_FAILED,
                 "The device did not accept and verify 'no page'.",
+                transient=isinstance(exc, CollectionFailure) and exc.transient,
+                diagnostic_detail=(
+                    exc.diagnostic_detail
+                    if isinstance(exc, CollectionFailure)
+                    else DiagnosticDetail.NONE
+                ),
             ) from exc
         self._paging_prepared = True
         self._terminal_width_prepared = False
@@ -192,7 +215,7 @@ class NetmikoSSHSession:
                 "Terminal width 511 must be verified before any show command.",
             )
         connection = self._require_connection()
-        prompt = self._prompt or _verified_exec_prompt(connection.find_prompt())
+        prompt = self._require_cached_prompt()
         try:
             if hasattr(connection, "clear_buffer"):
                 connection.clear_buffer()
@@ -203,21 +226,18 @@ class NetmikoSSHSession:
             )
             output = _strip_command_and_prompt(raw, normalized_command, prompt)
             validate_cli_response(normalized_command, output)
+            self._prompt = prompt
             return output
         except Exception as exc:
             raise _mapped_failure(exc, during="command") from exc
 
     def get_prompt(self) -> str:
-        connection = self._require_connection()
-        try:
-            prompt = _verified_exec_prompt(connection.find_prompt())
-        except Exception as exc:
-            raise _mapped_failure(exc, during="prompt") from exc
-        self._prompt = prompt
-        return prompt
+        self._require_connection()
+        return self._require_cached_prompt()
 
     def close(self) -> None:
         connection, self._connection = self._connection, None
+        self._prompt = None
         self._paging_prepared = False
         self._terminal_width_prepared = False
         if connection is not None:
@@ -226,7 +246,7 @@ class NetmikoSSHSession:
 
     def _execute_setup_command(self, command: str) -> None:
         connection = self._require_connection()
-        prompt = self._prompt or _verified_exec_prompt(connection.find_prompt())
+        prompt = self._require_cached_prompt()
         output = connection.send_command(
             command,
             expect_string=re.escape(prompt),
@@ -236,8 +256,15 @@ class NetmikoSSHSession:
             cmd_verify=True,
         )
         validate_cli_response(command, output)
-        verified = _verified_exec_prompt(connection.find_prompt())
-        self._prompt = verified
+        clean_output = _clean_channel_text(output)
+        if not _ends_with_prompt(clean_output, prompt):
+            raise CollectionFailure(
+                ErrorCode.PROMPT_PARSE_FAILED,
+                "The command response did not end at the verified device prompt.",
+                transient=True,
+                diagnostic_detail=DiagnosticDetail.PROMPT_MISMATCH,
+            )
+        self._prompt = prompt
 
     def _read_until_prompt(
         self,
@@ -303,6 +330,16 @@ class NetmikoSSHSession:
                 transient=True,
             )
         return self._connection
+
+    def _require_cached_prompt(self) -> str:
+        if self._prompt is None:
+            raise CollectionFailure(
+                ErrorCode.PROMPT_PARSE_FAILED,
+                "The final device prompt could not be verified.",
+                transient=True,
+                diagnostic_detail=DiagnosticDetail.PROMPT_EMPTY,
+            )
+        return _verified_exec_prompt(self._prompt)
 
 
 class _PinnedHostKeyPolicy:
@@ -373,6 +410,13 @@ def _mapped_failure(exc: Exception, *, during: str) -> CollectionFailure:
             else "SSH authentication failed."
         )
         return CollectionFailure(code, message)
+    if during == "prompt":
+        return CollectionFailure(
+            ErrorCode.PROMPT_PARSE_FAILED,
+            "The final device prompt could not be verified.",
+            transient=True,
+            diagnostic_detail=DiagnosticDetail.PROMPT_READ_ERROR,
+        )
     if (
         isinstance(exc, (TimeoutError, socket.timeout))
         or "timeout" in name
@@ -392,12 +436,6 @@ def _mapped_failure(exc: Exception, *, during: str) -> CollectionFailure:
     if during == "enable":
         return CollectionFailure(
             ErrorCode.ENABLE_FAILED, "Privileged EXEC mode could not be entered."
-        )
-    if during == "prompt":
-        return CollectionFailure(
-            ErrorCode.PROMPT_PARSE_FAILED,
-            "The final device prompt could not be verified.",
-            transient=True,
         )
     if during == "command":
         return CollectionFailure(
@@ -423,6 +461,57 @@ def _verified_exec_prompt(prompt: str) -> str:
     return clean
 
 
+def _read_verified_exec_prompt(connection: Any) -> str:
+    """Read one EXEC prompt and update Netmiko's base prompt without another round trip."""
+
+    prompt = _verified_exec_prompt(connection.find_prompt())
+    connection.base_prompt = prompt if len(prompt) == 1 else prompt[:-1]
+    return prompt
+
+
+def _prepare_aruba_login(connection: Any, connect_timeout: float) -> None:
+    """Apply only the banner/ANSI portion of Netmiko's HP ProCurve preparation."""
+
+    connection.ansi_escape_codes = True
+    reader = getattr(connection, "read_until_pattern", None)
+    if not callable(reader):
+        return
+
+    try:
+        reader(pattern=r".*opyright", read_timeout=min(1.3, connect_timeout))
+    except Exception as exc:
+        if not _is_read_timeout(exc):
+            raise
+
+    try:
+        data = reader(
+            pattern=r"(?i:any key to continue)|[>#]",
+            read_timeout=min(3.0, connect_timeout),
+        )
+    except Exception as exc:
+        if _is_read_timeout(exc):
+            return
+        raise
+
+    if re.search(r"any key to continue", data, flags=re.IGNORECASE):
+        connection.write_channel(getattr(connection, "RETURN", "\n"))
+        try:
+            reader(pattern=r"[>#]", read_timeout=min(3.0, connect_timeout))
+        except Exception as exc:
+            if _is_read_timeout(exc):
+                raise CollectionFailure(
+                    ErrorCode.PROMPT_PARSE_FAILED,
+                    "The login banner did not advance to the device prompt.",
+                    transient=True,
+                    diagnostic_detail=DiagnosticDetail.LOGIN_BANNER_PENDING,
+                ) from exc
+            raise
+
+
+def _is_read_timeout(exc: BaseException) -> bool:
+    return "readtimeout" in type(exc).__name__.lower()
+
+
 def _strip_ansi(value: str) -> str:
     return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
 
@@ -436,8 +525,15 @@ def _remove_backspaces(value: str) -> str:
     return value
 
 
+def _clean_channel_text(value: str) -> str:
+    return _remove_backspaces(_strip_ansi(value or "")).replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _ends_with_prompt(output: str, prompt: str) -> bool:
-    return bool(re.search(rf"(?m)^{re.escape(prompt)}\s*$", output.rstrip()))
+    clean_tail = output.rstrip()
+    if not clean_tail:
+        return False
+    return clean_tail.rsplit("\n", maxsplit=1)[-1].strip() == prompt
 
 
 def _tail_pager_match(output: str) -> re.Match[str] | None:
