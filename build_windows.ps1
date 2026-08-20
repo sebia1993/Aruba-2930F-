@@ -226,13 +226,8 @@ try {
 
     $sbomName = "$productName`_v$Version`_sbom.cdx.json"
     $sbomPath = Join-Path $releaseRoot $sbomName
-    $resolvedToolPython = (& $toolPython -c "import sys; print(sys.executable)").Trim()
-    $cycloneDx = Join-Path (Split-Path -Parent $resolvedToolPython) "cyclonedx-py.exe"
-    if (-not (Test-Path -LiteralPath $cycloneDx -PathType Leaf)) {
-        throw "CycloneDX executable was not found beside the build Python: $cycloneDx"
-    }
-    Invoke-Checked $cycloneDx @(
-        "requirements", "requirements-lock.txt",
+    Invoke-Checked $toolPython @(
+        "-m", "cyclonedx_py", "requirements", "requirements-lock.txt",
         "--pyproject", "pyproject.toml",
         "--mc-type", "application",
         "--output-reproducible",
