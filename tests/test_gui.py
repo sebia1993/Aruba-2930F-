@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -27,6 +28,7 @@ from aruba2930f_backup.gui import (
 )
 from aruba2930f_backup.hostkeys import HostKeyStore, sha256_fingerprint
 from aruba2930f_backup.models import (
+    CollectionFailure,
     CollectionOptions,
     DeviceResult,
     DeviceStatus,
@@ -64,6 +66,7 @@ class FakeService:
             "model": "Aruba 2930F",
             "sku": "JL253A",
             "status": "success",
+            "host_key_attempts": 1,
             "attempts": 1,
         }
         return BackupOutcome(
@@ -86,14 +89,26 @@ class FakeCollector:
         self.begin_runs += 1
         self.cancelled = False
 
-    def probe_host_keys(
+    def probe_host_keys_round(
         self,
         targets: Sequence[DeviceTarget],
         *,
+        attempt: int,
         options: CollectionOptions | None = None,
         cancel_event: threading.Event | None = None,
+        on_event: Callable[[object], None] | None = None,
     ) -> list[HostKeyCheck]:
         del options, cancel_event
+        if on_event is not None:
+            for target in targets:
+                on_event(
+                    {
+                        "target": target,
+                        "stage": "host_key_checking",
+                        "round": attempt,
+                        "attempt": attempt,
+                    }
+                )
         return [
             HostKeyCheck(
                 observation=HostKeyObservation(
@@ -102,9 +117,19 @@ class FakeCollector:
                     fingerprint="SHA256:fixture",
                 ),
                 state=HostKeyTrustState.TRUSTED,
+                attempts=attempt,
             )
             for target in targets
         ]
+
+    def wait_for_retry_delay(
+        self,
+        delay_seconds: float,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        del delay_seconds
+        return not bool(cancel_event and cancel_event.is_set())
 
     def approve_host_keys(self, checks: Iterable[HostKeyCheck]) -> None:
         raise AssertionError("Trusted fixture keys must not require approval")
@@ -234,6 +259,62 @@ def test_injected_service_runs_off_ui_thread_and_updates_results(
     window.close()
 
 
+@pytest.mark.gui
+def test_retry_wait_status_does_not_advance_attempt_before_next_connection(
+    app: QApplication,
+) -> None:
+    window = MainWindow(service=FakeService(Path.cwd()))
+    window._target_count = 1
+    target = {"ip": "192.0.2.20"}
+
+    window._on_collection_event(
+        {
+            "target": target,
+            "stage": "host_key_checking",
+            "phase": "host_key",
+            "round": 1,
+            "attempt": 1,
+        }
+    )
+    window._on_collection_event(
+        {
+            "target": target,
+            "stage": "retry_wait",
+            "phase": "host_key",
+            "round": 2,
+            "attempt": 2,
+            "delay_seconds": 5.0,
+        }
+    )
+
+    row = window._row_by_target["192.0.2.20"]
+    assert window.result_table.item(row, 3).text() == "재시도 대기"
+    assert window.result_table.item(row, 4).text() == "키 1/4 · 백업 0/4"
+    assert window.result_table.item(row, 3).foreground().color().name() == "#9a6700"
+    window.close()
+
+
+@pytest.mark.gui
+def test_terminal_failed_event_counts_as_completed_progress(app: QApplication) -> None:
+    window = MainWindow(service=FakeService(Path.cwd()))
+    window._target_count = 1
+
+    window._on_collection_event(
+        {
+            "target": {"ip": "192.0.2.21"},
+            "stage": "failed",
+            "phase": "backup",
+            "round": 1,
+            "attempt": 1,
+            "error_code": "AUTH_FAILED",
+        }
+    )
+
+    assert window.progress_bar.value() == 100
+    assert "192.0.2.21" in window._completed_targets
+    window.close()
+
+
 def test_collector_service_writes_config_report_and_sanitized_log(tmp_path: Path) -> None:
     collector = FakeCollector()
     service = CollectorBackupService(collector)
@@ -287,32 +368,70 @@ def test_backup_request_repr_never_contains_secrets(tmp_path: Path) -> None:
 
 def test_host_key_probe_failure_is_per_device_and_preserves_other_backup(tmp_path: Path) -> None:
     class PartiallyReachableCollector(FakeCollector):
-        def probe_host_keys(
+        def __init__(self) -> None:
+            super().__init__()
+            self.call_log: list[str] = []
+
+        def probe_host_keys_round(
             self,
             targets: Sequence[DeviceTarget],
             *,
+            attempt: int,
             options: CollectionOptions | None = None,
             cancel_event: threading.Event | None = None,
+            on_event: Callable[[object], None] | None = None,
         ) -> list[HostKeyCheck]:
-            del options, cancel_event
-            return [
-                HostKeyCheck(
-                    observation=HostKeyObservation(targets[0], "", ""),
-                    state=HostKeyTrustState.REJECTED,
-                    message="The SSH endpoint timed out.",
-                    error_code=ErrorCode.TCP_TIMEOUT,
-                    attempts=4,
-                ),
-                HostKeyCheck(
-                    observation=HostKeyObservation(
-                        targets[1], "ssh-ed25519", "SHA256:trusted-fixture"
-                    ),
-                    state=HostKeyTrustState.TRUSTED,
-                ),
-            ]
+            del options, cancel_event, on_event
+            self.call_log.append(f"probe-{attempt}:" + ",".join(target.ip for target in targets))
+            checks: list[HostKeyCheck] = []
+            for target in targets:
+                if target.ip == "192.0.2.10":
+                    checks.append(
+                        HostKeyCheck(
+                            observation=HostKeyObservation(target, "", ""),
+                            state=HostKeyTrustState.REJECTED,
+                            message="The SSH endpoint timed out.",
+                            error_code=ErrorCode.TCP_TIMEOUT,
+                            attempts=attempt,
+                            retryable=True,
+                            retry_exhausted=attempt >= 4,
+                        )
+                    )
+                else:
+                    checks.append(
+                        HostKeyCheck(
+                            observation=HostKeyObservation(
+                                target, "ssh-ed25519", "SHA256:trusted-fixture"
+                            ),
+                            state=HostKeyTrustState.TRUSTED,
+                            attempts=attempt,
+                        )
+                    )
+            return checks
+
+        def collect_many(
+            self,
+            targets: Sequence[DeviceTarget],
+            credentials: object,
+            options: CollectionOptions | None = None,
+            *,
+            cancel_event: threading.Event | None = None,
+            on_event: Callable[[object], None] | None = None,
+        ) -> list[DeviceResult]:
+            self.call_log.append("collect:" + ",".join(target.ip for target in targets))
+            return super().collect_many(
+                targets,
+                credentials,
+                options,
+                cancel_event=cancel_event,
+                on_event=on_event,
+            )
 
     collector = PartiallyReachableCollector()
-    outcome = CollectorBackupService(collector).run(
+    outcome = CollectorBackupService(
+        collector,
+        retry_delays_seconds=(0.0, 0.0, 0.0),
+    ).run(
         BackupRequest(
             targets=("192.0.2.10", "192.0.2.11"),
             port=22,
@@ -331,11 +450,103 @@ def test_host_key_probe_failure_is_per_device_and_preserves_other_backup(tmp_pat
 
     first, second = outcome.results
     assert first["target"]["ip"] == "192.0.2.10"
-    assert first["status"] == DeviceStatus.FAILED
+    assert first["status"] == DeviceStatus.RETRY_EXHAUSTED
     assert first["error_code"] == ErrorCode.TCP_TIMEOUT
-    assert first["attempts"] == 4
+    assert first["host_key_attempts"] == 4
+    assert first["attempts"] == 0
     assert second["target"]["ip"] == "192.0.2.11"
     assert second["status"] == DeviceStatus.SUCCESS
+    assert second["host_key_attempts"] == 1
+    assert collector.call_log[:3] == [
+        "probe-1:192.0.2.10,192.0.2.11",
+        "collect:192.0.2.11",
+        "probe-2:192.0.2.10",
+    ]
+    retry_log = next(
+        record
+        for record in (
+            json.loads(line)
+            for line in (outcome.run_directory / "operation.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        if record.get("stage") == "retry_wait"
+    )
+    assert retry_log["round"] == 2
+    assert retry_log["attempt"] == 1
+    assert retry_log["delay_seconds"] == 0.0
+    assert retry_log["error_code"] == ErrorCode.TCP_TIMEOUT
+
+
+@pytest.mark.gui
+def test_retry_exhausted_button_runs_only_captured_subset_with_new_password(
+    app: QApplication,
+    tmp_path: Path,
+) -> None:
+    class RetrySubsetService:
+        def __init__(self) -> None:
+            self.requests: list[BackupRequest] = []
+
+        def run(self, request: BackupRequest, callbacks: BackupCallbacks) -> BackupOutcome:
+            del callbacks
+            self.requests.append(request)
+            run_number = len(self.requests)
+            run_directory = tmp_path / f"run-{run_number}"
+            run_directory.mkdir()
+            results: list[dict[str, object]] = []
+            for target in request.targets:
+                exhausted = target == "192.0.2.11"
+                results.append(
+                    {
+                        "target": {"ip": target},
+                        "status": "retry_exhausted" if exhausted else "success",
+                        "host_key_attempts": 1,
+                        "attempts": 4 if exhausted else 1,
+                        "error_code": "TCP_TIMEOUT" if exhausted else "",
+                    }
+                )
+            return BackupOutcome(
+                run_directory=run_directory,
+                results=tuple(results),
+                report_path=run_directory / "result.xlsx",
+            )
+
+        def cancel(self) -> None:
+            pass
+
+    service = RetrySubsetService()
+    window = MainWindow(service=service)
+    window.ip_input.setPlainText("192.0.2.10\n192.0.2.11")
+    window.username_input.setText("operator")
+    window.password_input.setText("first-password")
+    window.output_input.setText(str(tmp_path))
+
+    window.start_button.click()
+    _wait_until(app, lambda: window.start_button.isEnabled())
+
+    assert window.retry_exhausted_button.isEnabled()
+    exhausted_row = window._row_by_target["192.0.2.11"]
+    assert window.result_table.item(exhausted_row, 3).text() == "재시도 소진"
+    assert window.result_table.item(exhausted_row, 4).text() == "키 1/4 · 백업 4/4"
+    assert window.password_input.text() == ""
+    assert window.ip_input.toPlainText() == "192.0.2.10\n192.0.2.11"
+
+    window.port_input.setValue(2222)
+    window.username_input.setText("retry-operator")
+    window.concurrency_input.setValue(3)
+    window.password_input.setText("new-password")
+    window.retry_exhausted_button.click()
+    _wait_until(app, lambda: len(service.requests) == 2 and window.start_button.isEnabled())
+
+    assert service.requests[1].targets == ("192.0.2.11",)
+    assert service.requests[1].port == 2222
+    assert service.requests[1].username == "retry-operator"
+    assert service.requests[1].concurrency == 3
+    assert service.requests[1].password == "new-password"
+    assert window.result_table.rowCount() == 1
+    assert service.requests[0].output_directory == service.requests[1].output_directory
+    assert (tmp_path / "run-1") != (tmp_path / "run-2")
+    window.close()
 
 
 def test_same_service_runs_successfully_after_prior_cancel(tmp_path: Path) -> None:
@@ -378,9 +589,135 @@ def test_same_service_runs_successfully_after_prior_cancel(tmp_path: Path) -> No
             ),
         )
 
-    assert run_once().results[0]["status"] is DeviceStatus.SUCCESS
+    first_outcome = run_once()
+    assert first_outcome.results[0]["status"] is DeviceStatus.SUCCESS
     service.cancel()
-    assert run_once().results[0]["status"] is DeviceStatus.SUCCESS
+    second_outcome = run_once()
+    assert second_outcome.results[0]["status"] is DeviceStatus.SUCCESS
+    assert first_outcome.run_directory != second_outcome.run_directory
+    assert first_outcome.report_path.exists()
+    assert second_outcome.report_path.exists()
+
+
+def test_cancel_during_preflight_retry_wait_writes_cancelled_report(tmp_path: Path) -> None:
+    class CancelDuringWaitCollector(FakeCollector):
+        def probe_host_keys_round(
+            self,
+            targets: Sequence[DeviceTarget],
+            *,
+            attempt: int,
+            options: CollectionOptions | None = None,
+            cancel_event: threading.Event | None = None,
+            on_event: Callable[[object], None] | None = None,
+        ) -> list[HostKeyCheck]:
+            del options, cancel_event, on_event
+            assert attempt == 1
+            return [
+                HostKeyCheck(
+                    observation=HostKeyObservation(target, "", ""),
+                    state=HostKeyTrustState.REJECTED,
+                    message="The SSH endpoint timed out.",
+                    error_code=ErrorCode.TCP_TIMEOUT,
+                    attempts=attempt,
+                    retryable=True,
+                )
+                for target in targets
+            ]
+
+        def wait_for_retry_delay(
+            self,
+            delay_seconds: float,
+            *,
+            cancel_event: threading.Event | None = None,
+        ) -> bool:
+            assert delay_seconds >= 0
+            assert cancel_event is not None
+            cancel_event.set()
+            return False
+
+    events: list[object] = []
+    outcome = CollectorBackupService(CancelDuringWaitCollector()).run(
+        BackupRequest(
+            targets=("192.0.2.75",),
+            port=22,
+            username="operator",
+            password="test-password",
+            enable_password=None,
+            concurrency=1,
+            output_directory=tmp_path,
+        ),
+        BackupCallbacks(
+            on_event=events.append,
+            request_host_key_approval=lambda _checks: False,
+            cancel_event=threading.Event(),
+        ),
+    )
+
+    assert outcome.cancelled is True
+    assert outcome.report_path.exists()
+    assert outcome.results[0]["status"] is DeviceStatus.CANCELLED
+    assert outcome.results[0]["host_key_attempts"] == 1
+    assert outcome.results[0]["attempts"] == 0
+    assert any(
+        str(getattr(event.get("stage"), "value", event.get("stage"))) == "retry_wait"
+        for event in cast(list[dict[str, object]], events)
+    )
+
+
+def test_cancel_mid_host_key_round_preserves_only_started_attempts(tmp_path: Path) -> None:
+    class CancelMidRoundCollector(FakeCollector):
+        def probe_host_keys_round(
+            self,
+            targets: Sequence[DeviceTarget],
+            *,
+            attempt: int,
+            options: CollectionOptions | None = None,
+            cancel_event: threading.Event | None = None,
+            on_event: Callable[[object], None] | None = None,
+        ) -> list[HostKeyCheck]:
+            del options
+            assert attempt == 1
+            assert cancel_event is not None
+            assert on_event is not None
+            for target in targets[:2]:
+                on_event(
+                    {
+                        "target": target,
+                        "stage": "host_key_checking",
+                        "attempt": attempt,
+                    }
+                )
+            cancel_event.set()
+            raise CollectionFailure(
+                ErrorCode.CANCELLED,
+                "Host-key review was cancelled.",
+            )
+
+    outcome = CollectorBackupService(CancelMidRoundCollector()).run(
+        BackupRequest(
+            targets=("192.0.2.75", "192.0.2.76", "192.0.2.77"),
+            port=22,
+            username="operator",
+            password="test-password",
+            enable_password=None,
+            concurrency=2,
+            output_directory=tmp_path,
+        ),
+        BackupCallbacks(
+            on_event=lambda _event: None,
+            request_host_key_approval=lambda _checks: False,
+            cancel_event=threading.Event(),
+        ),
+    )
+
+    assert outcome.cancelled is True
+    assert [result["status"] for result in outcome.results] == [
+        DeviceStatus.CANCELLED,
+        DeviceStatus.CANCELLED,
+        DeviceStatus.CANCELLED,
+    ]
+    assert [result["host_key_attempts"] for result in outcome.results] == [1, 1, 0]
+    assert [result["attempts"] for result in outcome.results] == [0, 0, 0]
 
 
 @pytest.mark.gui

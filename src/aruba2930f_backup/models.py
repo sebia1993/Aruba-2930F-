@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from ipaddress import IPv4Address
+from math import isfinite
 from pathlib import Path
 from typing import Final
 
@@ -38,11 +39,13 @@ class DeviceStatus(StrEnum):
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
+    RETRY_EXHAUSTED = "retry_exhausted"
     CANCELLED = "cancelled"
 
 
 class CollectionStage(StrEnum):
     QUEUED = "queued"
+    HOST_KEY_CHECKING = "host_key_checking"
     CONNECTING = "connecting"
     ENABLING = "enabling"
     DISABLING_PAGING = "disabling_paging"
@@ -53,6 +56,8 @@ class CollectionStage(StrEnum):
     READING_CONFIG = "reading_config"
     VERIFYING_PROMPT = "verifying_prompt"
     RETRYING = "retrying"
+    RETRY_QUEUED = "retry_queued"
+    RETRY_WAIT = "retry_wait"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -122,6 +127,7 @@ class CollectionOptions:
     max_output_bytes: int = 20 * 1024 * 1024
     max_output_lines: int = 250_000
     max_pager_advances: int = 10_000
+    retry_delays_seconds: tuple[float, ...] = (5.0, 15.0, 30.0)
 
     def __post_init__(self) -> None:
         if not 1 <= self.concurrency <= 20:
@@ -134,6 +140,13 @@ class CollectionOptions:
             raise ValueError("Output limits must be positive.")
         if self.max_pager_advances < 0:
             raise ValueError("Pager advance limit cannot be negative.")
+        if len(self.retry_delays_seconds) < self.max_attempts - 1:
+            raise ValueError("Retry delays must cover every retry attempt.")
+        if any(
+            not isinstance(delay, (int, float)) or not isfinite(delay) or delay < 0
+            for delay in self.retry_delays_seconds
+        ):
+            raise ValueError("Retry delays must be finite, non-negative numbers.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +164,8 @@ class HostKeyCheck:
     message: str = ""
     error_code: ErrorCode | None = None
     attempts: int = 1
+    retryable: bool = False
+    retry_exhausted: bool = False
 
     @property
     def target(self) -> DeviceTarget:
@@ -180,6 +195,8 @@ class CollectionEvent:
     attempt: int
     message: str = ""
     error_code: ErrorCode | None = None
+    round: int | None = None
+    delay_seconds: float | None = None
 
 
 @dataclass(slots=True)
@@ -200,6 +217,7 @@ class DeviceResult:
     error_code: ErrorCode | None = None
     error_message: str = ""
     warnings: tuple[str, ...] = ()
+    host_key_attempts: int = 0
 
     @property
     def succeeded(self) -> bool:

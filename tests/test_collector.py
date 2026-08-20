@@ -4,6 +4,7 @@ import hashlib
 import threading
 from pathlib import Path
 
+import pytest
 from tests.fakes import MODULES_2930F, RUNNING_CONFIG, ScriptedFactory, ScriptedSession
 
 from aruba2930f_backup.collector import ArubaCollector
@@ -22,13 +23,14 @@ from aruba2930f_backup.models import (
 
 TARGET = DeviceTarget("192.0.2.40")
 CREDENTIALS = Credentials("operator", "session-password", "enable-secret")
+FAST_RETRY_OPTIONS = CollectionOptions(retry_delays_seconds=(0.0, 0.0, 0.0))
 
 
 def test_collection_enforces_exact_command_order_and_normalizes_hash() -> None:
     factory = ScriptedFactory()
     collector = ArubaCollector(factory)
 
-    result = collector.collect_one(TARGET, CREDENTIALS)
+    result = collector.collect_one(TARGET, CREDENTIALS, options=FAST_RETRY_OPTIONS)
 
     assert result.status is DeviceStatus.SUCCESS
     assert factory.sessions[0].calls == [
@@ -74,7 +76,7 @@ def test_transient_failure_reconnects_up_to_four_attempts_and_reapplies_no_page(
     factory = ScriptedFactory(builder)
     collector = ArubaCollector(factory)
 
-    result = collector.collect_one(TARGET, CREDENTIALS)
+    result = collector.collect_one(TARGET, CREDENTIALS, options=FAST_RETRY_OPTIONS)
 
     assert result.status is DeviceStatus.SUCCESS
     assert result.attempts == 4
@@ -82,6 +84,120 @@ def test_transient_failure_reconnects_up_to_four_attempts_and_reapplies_no_page(
     assert all(session.calls.count("no page") == 1 for session in factory.sessions)
     assert all(session.calls.count("show running-config") == 1 for session in factory.sessions)
     assert all(session.closed for session in factory.sessions)
+
+
+def test_collect_many_defers_retry_until_every_target_finishes_current_round() -> None:
+    targets = [DeviceTarget("192.0.2.51"), DeviceTarget("192.0.2.52")]
+    attempts_by_endpoint = {target.endpoint: 0 for target in targets}
+
+    def builder(index: int, target: DeviceTarget) -> ScriptedSession:
+        del index
+        attempts_by_endpoint[target.endpoint] += 1
+        failures = (
+            {
+                "connect": CollectionFailure(
+                    ErrorCode.TCP_TIMEOUT,
+                    "Connection timed out.",
+                    transient=True,
+                )
+            }
+            if attempts_by_endpoint[target.endpoint] == 1
+            else {}
+        )
+        return ScriptedSession(target, failure_by_command=failures)
+
+    factory = ScriptedFactory(builder)
+    results = ArubaCollector(factory).collect_many(
+        targets,
+        CREDENTIALS,
+        CollectionOptions(
+            concurrency=1,
+            max_attempts=2,
+            retry_delays_seconds=(0.0,),
+        ),
+    )
+
+    assert [session.target for session in factory.sessions] == [*targets, *targets]
+    assert [result.status for result in results] == [DeviceStatus.SUCCESS, DeviceStatus.SUCCESS]
+    assert [result.attempts for result in results] == [2, 2]
+    assert all(result.host_key_attempts == 0 for result in results)
+
+
+def test_transient_failure_after_four_rounds_is_retry_exhausted() -> None:
+    factory = ScriptedFactory(
+        lambda index, target: ScriptedSession(
+            target,
+            failure_by_command={
+                "connect": CollectionFailure(
+                    ErrorCode.TCP_TIMEOUT,
+                    "Connection timed out.",
+                    transient=True,
+                )
+            },
+        )
+    )
+
+    result = ArubaCollector(factory).collect_one(
+        TARGET,
+        CREDENTIALS,
+        options=FAST_RETRY_OPTIONS,
+    )
+
+    assert result.status is DeviceStatus.RETRY_EXHAUSTED
+    assert result.error_code is ErrorCode.TCP_TIMEOUT
+    assert result.attempts == 4
+    assert len(factory.sessions) == 4
+
+
+def test_cancel_during_retry_wait_is_prompt_and_preserves_completed_attempt_count() -> None:
+    wait_started = threading.Event()
+    cancelled = threading.Event()
+    events = []
+    factory = ScriptedFactory(
+        lambda index, target: ScriptedSession(
+            target,
+            failure_by_command={
+                "connect": CollectionFailure(
+                    ErrorCode.TCP_TIMEOUT,
+                    "Connection timed out.",
+                    transient=True,
+                )
+            },
+        )
+    )
+    collector = ArubaCollector(factory)
+    holder = []
+
+    def on_event(event: object) -> None:
+        events.append(event)
+        if getattr(event, "stage", None) is CollectionStage.RETRY_WAIT:
+            wait_started.set()
+
+    worker = threading.Thread(
+        target=lambda: holder.append(
+            collector.collect_one(
+                TARGET,
+                CREDENTIALS,
+                options=CollectionOptions(retry_delays_seconds=(5.0, 0.0, 0.0)),
+                cancel_event=cancelled,
+                on_event=on_event,
+            )
+        ),
+        daemon=True,
+    )
+    worker.start()
+    assert wait_started.wait(timeout=1)
+    cancelled.set()
+    worker.join(timeout=1)
+
+    assert not worker.is_alive()
+    assert holder[0].status is DeviceStatus.CANCELLED
+    assert holder[0].attempts == 1
+    assert len(factory.sessions) == 1
+    retry_wait = next(event for event in events if event.stage is CollectionStage.RETRY_WAIT)
+    assert retry_wait.round == 2
+    assert retry_wait.delay_seconds == 5.0
+    assert retry_wait.error_code is ErrorCode.TCP_TIMEOUT
 
 
 def test_non_transient_authentication_failure_is_not_retried() -> None:
@@ -248,10 +364,16 @@ def test_events_cover_retry_and_completion_without_exposing_credentials() -> Non
     )
     events = []
 
-    result = ArubaCollector(factory).collect_one(TARGET, CREDENTIALS, on_event=events.append)
+    result = ArubaCollector(factory).collect_one(
+        TARGET,
+        CREDENTIALS,
+        options=FAST_RETRY_OPTIONS,
+        on_event=events.append,
+    )
 
     assert result.status is DeviceStatus.SUCCESS
-    assert CollectionStage.RETRYING in [event.stage for event in events]
+    assert CollectionStage.RETRY_QUEUED in [event.stage for event in events]
+    assert CollectionStage.RETRY_WAIT in [event.stage for event in events]
     assert events[-1].stage is CollectionStage.COMPLETED
     rendered = repr(events)
     assert "session-password" not in rendered
@@ -302,11 +424,13 @@ def test_probe_failure_is_retry_bounded_per_target_and_does_not_abort_batch(tmp_
     unreachable = DeviceTarget("192.0.2.41")
     reachable = DeviceTarget("192.0.2.42")
     calls: dict[str, int] = {unreachable.ip: 0, reachable.ip: 0}
+    call_order: list[str] = []
 
     class Probe:
         def probe(self, target: DeviceTarget, *, timeout: float = 15.0) -> HostKeyObservation:
             del timeout
             calls[target.ip] += 1
+            call_order.append(target.ip)
             if target == unreachable:
                 raise CollectionFailure(
                     ErrorCode.TCP_TIMEOUT,
@@ -325,15 +449,87 @@ def test_probe_failure_is_retry_bounded_per_target_and_does_not_abort_batch(tmp_
         host_key_probe=Probe(),
     )
 
-    checks = collector.probe_host_keys([unreachable, reachable])
+    checks = collector.probe_host_keys(
+        [unreachable, reachable],
+        options=CollectionOptions(concurrency=1, retry_delays_seconds=(0.0, 0.0, 0.0)),
+    )
 
     assert [check.target for check in checks] == [unreachable, reachable]
     assert checks[0].state is HostKeyTrustState.REJECTED
     assert checks[0].error_code is ErrorCode.TCP_TIMEOUT
     assert checks[0].attempts == 4
+    assert checks[0].retryable
+    assert checks[0].retry_exhausted
     assert checks[1].state is HostKeyTrustState.UNKNOWN
     assert checks[1].attempts == 1
     assert calls == {unreachable.ip: 4, reachable.ip: 1}
+    assert call_order == [
+        unreachable.ip,
+        reachable.ip,
+        unreachable.ip,
+        unreachable.ip,
+        unreachable.ip,
+    ]
+
+
+def test_host_key_retry_wait_is_cancellable_and_emits_structured_delay(tmp_path: Path) -> None:
+    cancelled = threading.Event()
+    events = []
+
+    class Probe:
+        def probe(self, target: DeviceTarget, *, timeout: float = 15.0) -> HostKeyObservation:
+            del timeout
+            raise CollectionFailure(
+                ErrorCode.TCP_TIMEOUT,
+                "The endpoint timed out.",
+                transient=True,
+            )
+
+    collector = ArubaCollector(
+        ScriptedFactory(),
+        host_key_store=HostKeyStore(tmp_path / "known_hosts.json"),
+        host_key_probe=Probe(),
+    )
+
+    def on_event(event: object) -> None:
+        events.append(event)
+        if getattr(event, "stage", None) is CollectionStage.RETRY_WAIT:
+            cancelled.set()
+
+    with pytest.raises(CollectionFailure) as caught:
+        collector.probe_host_keys(
+            [TARGET],
+            options=CollectionOptions(retry_delays_seconds=(5.0, 0.0, 0.0)),
+            cancel_event=cancelled,
+            on_event=on_event,
+        )
+
+    assert caught.value.code is ErrorCode.CANCELLED
+    retry_wait = next(event for event in events if event.stage is CollectionStage.RETRY_WAIT)
+    assert retry_wait.round == 2
+    assert retry_wait.delay_seconds == 5.0
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"max_attempts": 4, "retry_delays_seconds": (0.0, 0.0)},
+        {"retry_delays_seconds": (0.0, -1.0, 0.0)},
+        {"retry_delays_seconds": (0.0, float("inf"), 0.0)},
+        {"retry_delays_seconds": (0.0, float("nan"), 0.0)},
+    ],
+)
+def test_collection_options_reject_invalid_retry_delays(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        CollectionOptions(**kwargs)  # type: ignore[arg-type]
+
+
+def test_public_retry_wait_contract_distinguishes_elapsed_from_cancelled() -> None:
+    collector = ArubaCollector(ScriptedFactory())
+    assert collector.wait_for_retry_delay(0.0)
+    cancelled = threading.Event()
+    cancelled.set()
+    assert not collector.wait_for_retry_delay(5.0, cancel_event=cancelled)
 
 
 def test_unexpected_factory_failure_is_sanitized() -> None:

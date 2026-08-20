@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected", help="Expected semantic version without a leading v")
-    parser.add_argument("--tag", help="Expected release tag, for example v0.1.0")
+    parser.add_argument("--tag", help="Expected release tag, for example v0.1.1")
     return parser.parse_args()
 
 
@@ -93,6 +93,18 @@ def main() -> int:
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     if f"## [{pyproject_version}]" not in changelog:
         raise ValueError(f"CHANGELOG.md has no [{pyproject_version}] release section")
+
+    synchronized_text = {
+        "build_windows.ps1": f'[string]$Version = "{pyproject_version}"',
+        ".github/workflows/ci.yml": f"-Version {pyproject_version}",
+        "README.md": f"Aruba2930FConfigBackup_v{pyproject_version}_windows_x64.zip",
+    }
+    for relative_path, expected_text in synchronized_text.items():
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        if expected_text not in text:
+            raise ValueError(
+                f"{relative_path} does not declare current version {pyproject_version}"
+            )
 
     project_pins = _project_pins(project)
     requirements_pins = _direct_pins(ROOT / "requirements.txt")
