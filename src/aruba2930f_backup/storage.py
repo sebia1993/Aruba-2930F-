@@ -13,6 +13,7 @@ import re
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 
 _INVALID_FILENAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -25,6 +26,14 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"COM{number}" for number in range(1, 10)),
     *(f"LPT{number}" for number in range(1, 10)),
 }
+
+
+class FilenameMode(StrEnum):
+    """Operator-selectable naming policy for per-device configuration files."""
+
+    HOSTNAME = "hostname"
+    IP = "ip"
+    HOSTNAME_IP = "hostname_ip"
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,16 +101,18 @@ def device_config_path(
     *,
     hostname: str | None,
     ip_address: str,
+    filename_mode: FilenameMode = FilenameMode.HOSTNAME_IP,
     reserved_names: Collection[str] = (),
 ) -> Path:
     """Choose a non-conflicting ``.txt`` path for a device.
 
-    A detected hostname is paired with the device IP. If the resulting name
-    collides, a numeric suffix is used. Comparisons are case-insensitive to
-    match Windows filesystem behavior.
+    The selected mode controls the preferred stem. A missing hostname always
+    falls back to the IP address, and collisions gain a numeric suffix.
+    Comparisons are case-insensitive to match Windows filesystem behavior.
     """
 
     directory = Path(run_directory)
+    resolved_mode = FilenameMode(filename_mode)
     fallback_stem = _safe_component(ip_address, fallback="device")
     hostname_stem = _safe_component(hostname or "", fallback=fallback_stem)
     detected_hostname = bool(hostname and _clean_component(hostname))
@@ -110,7 +121,12 @@ def device_config_path(
     if directory.exists():
         occupied.update(path.name.casefold() for path in directory.iterdir() if path.is_file())
 
-    base = f"{hostname_stem}({fallback_stem})" if detected_hostname else fallback_stem
+    if not detected_hostname or resolved_mode is FilenameMode.IP:
+        base = fallback_stem
+    elif resolved_mode is FilenameMode.HOSTNAME:
+        base = hostname_stem
+    else:
+        base = f"{hostname_stem}({fallback_stem})"
     candidate = f"{base}.txt"
     counter = 2
     while candidate.casefold() in occupied:

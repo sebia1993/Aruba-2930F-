@@ -4,7 +4,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 수집하는 Windows용 GUI 도구입니다. 장비 설정을 변경하지 않으며, 수집 전에
 항상 `no page`를 적용해 수동으로 페이지를 넘기지 않고 한 번에 백업합니다.
 
-> **릴리즈 상태:** v0.1.7은 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
+> **릴리즈 상태:** v0.1.8은 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
 > 로컬 파일 시스템을 사용하며, 실제 Aruba 2930F에서의 동작을 증명하지는
 > 않습니다. 현장 도입 전 별도 검증이 필요합니다.
 
@@ -16,6 +16,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 - 승인된 SSH 장비 지문 변경 시 연결 차단
 - 두 장비 정보 명령에서 Aruba 2930F 계열을 확인한 뒤에만 `show running-config` 실행
 - 장비별 UTF-8 TXT 파일과 실행 결과 `result.xlsx` 생성
+- 장비 이름, IP 또는 장비 이름(IP) 중 TXT 파일 이름 형식 선택
 - 5/15/30초 지연을 둔 최대 4라운드 transient 재시도
 - 재시도 소진 장비만 새 실행으로 다시 수집하는 수동 재시도
 - 즉시 취소, 15자 오프라인 진단 코드와 민감정보 없는 로그
@@ -25,13 +26,13 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 ## 다운로드와 실행
 
 1. GitHub Releases에서
-   `Aruba2930FConfigBackup_v0.1.7_windows_x64.zip`과 같은 이름의
+   `Aruba2930FConfigBackup_v0.1.8_windows_x64.zip`과 같은 이름의
    `.sha256` 파일을 내려받습니다.
 2. PowerShell에서 해시를 확인합니다.
 
    ```powershell
-   Get-FileHash .\Aruba2930FConfigBackup_v0.1.7_windows_x64.zip -Algorithm SHA256
-   Get-Content .\Aruba2930FConfigBackup_v0.1.7_windows_x64.zip.sha256
+   Get-FileHash .\Aruba2930FConfigBackup_v0.1.8_windows_x64.zip -Algorithm SHA256
+   Get-Content .\Aruba2930FConfigBackup_v0.1.8_windows_x64.zip.sha256
    ```
 
 3. ZIP 전체를 쓰기 가능한 로컬 폴더에 압축 해제합니다. ZIP 안의 EXE만
@@ -132,12 +133,19 @@ EXEC 프롬프트는 ANSI·백스페이스를 정리한 뒤 한 줄이고 `#` �
 
 ```text
 %USERPROFILE%\Documents\Aruba2930FConfigBackup\backup\YYYY-MM-DD\HHmmss\
-├── <hostname>(<ip>).txt
-├── <hostname>(<ip>)_2.txt    # 동일 파일명이 이미 있을 때
-├── <ip>.txt                  # 호스트명 확인 실패 시
+├── <hostname>.txt            # 장비 이름
+├── <ip>.txt                  # IP 또는 호스트명 확인 실패 시
+├── <hostname>(<ip>).txt      # 장비 이름(IP), 기본값
+├── <selected-name>_2.txt     # 동일 파일명이 이미 있을 때
 ├── operation.jsonl           # 민감정보를 제거한 단계/오류 진단 로그
 └── result.xlsx
 ```
+
+`3. 실행 옵션`의 **파일 이름 형식**에서 한 실행에 사용할 형식을 선택합니다.
+선택값은 프로그램을 종료할 때 저장하지 않으며, 다음 실행에서는 기본값인
+`장비 이름(IP)`으로 돌아갑니다. `장비 이름`을 선택해도 호스트명을 확인하지
+못하면 해당 장비는 `<ip>.txt`로 저장합니다. 같은 기본 이름이 이미 있으면
+`_2`, `_3` 순서로 숫자 접미사를 추가합니다.
 
 설정 파일은 UTF-8과 Windows 줄바꿈으로 저장되고 SHA-256이 계산됩니다.
 `result.xlsx`에는 `Summary`, `Devices` 시트가 있으며 장비 주소, 탐지된
@@ -245,7 +253,7 @@ Paramiko 4.0.0의 SHA-1 RSA 허용은 저위험 보안 권고
 장비가 SHA-2 기반 SSH를 지원하도록 갱신되면 이 예외와 Paramiko 4 고정을 함께
 제거해야 합니다.
 
-## v0.1.7 범위 밖
+## v0.1.8 범위 밖
 
 - 예약 실행 및 서비스/에이전트 모드
 - Excel/CSV 장비 목록 가져오기
@@ -278,7 +286,7 @@ portable 패키지 빌드:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
-  -PythonPath C:\Python314\python.exe -Version 0.1.7
+  -PythonPath C:\Python314\python.exe -Version 0.1.8
 ```
 
 빌드는 `artifacts\release` 아래에 ZIP, SHA-256, CycloneDX SBOM을 만들고
@@ -299,7 +307,8 @@ session-only. Transient failures use four non-blocking rounds (immediate, then
 5/15/30-second delays); exhausted devices can be manually rerun into a new run
 folder after credentials are re-entered. A verified running-config hostname is
 used when a complex prompt has no simple hostname, and backup files use the
-`hostname(ip).txt` form when a name is available. v0.1.7 is an unsigned prerelease
+operator-selected `hostname.txt`, `ip.txt`, or `hostname(ip).txt` form. v0.1.8 is
+an unsigned prerelease
 validated with mocks and local package checks, not with a live switch.
 
 ## 라이선스와 보안 제보

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from aruba2930f_backup.storage import (
+    FilenameMode,
     cleanup_partial_files,
     create_run_directory,
     device_config_path,
@@ -60,6 +61,84 @@ def test_device_config_path_pairs_hostname_with_ip_and_uses_collision_suffix(
     assert collision.name == "edge_sw_01(192.0.2.10)_2.txt"
     assert other_address.name == "edge_sw_01(192.0.2.11).txt"
     assert fallback.name == "192.0.2.12.txt"
+
+
+@pytest.mark.parametrize(
+    ("filename_mode", "expected"),
+    (
+        (FilenameMode.HOSTNAME, "edge_sw_01.txt"),
+        (FilenameMode.IP, "192.0.2.30.txt"),
+        (FilenameMode.HOSTNAME_IP, "edge_sw_01(192.0.2.30).txt"),
+    ),
+)
+def test_device_config_path_supports_each_filename_mode(
+    tmp_path: Path,
+    filename_mode: FilenameMode,
+    expected: str,
+) -> None:
+    path = device_config_path(
+        tmp_path,
+        hostname="edge/sw:01",
+        ip_address="192.0.2.30",
+        filename_mode=filename_mode,
+    )
+
+    assert path.name == expected
+
+
+@pytest.mark.parametrize("filename_mode", tuple(FilenameMode))
+def test_device_config_path_uses_ip_when_hostname_is_unavailable(
+    tmp_path: Path,
+    filename_mode: FilenameMode,
+) -> None:
+    path = device_config_path(
+        tmp_path,
+        hostname=None,
+        ip_address="192.0.2.31",
+        filename_mode=filename_mode,
+    )
+
+    assert path.name == "192.0.2.31.txt"
+
+
+def test_hostname_mode_uses_numeric_suffix_for_duplicate_names(tmp_path: Path) -> None:
+    first = device_config_path(
+        tmp_path,
+        hostname="edge-lab",
+        ip_address="192.0.2.40",
+        filename_mode=FilenameMode.HOSTNAME,
+    )
+    first.write_text("existing", encoding="utf-8")
+    second = device_config_path(
+        tmp_path,
+        hostname="edge-lab",
+        ip_address="192.0.2.41",
+        filename_mode=FilenameMode.HOSTNAME,
+    )
+
+    assert first.name == "edge-lab.txt"
+    assert second.name == "edge-lab_2.txt"
+
+
+def test_hostname_mode_sanitizes_windows_reserved_name_and_casefolded_collision(
+    tmp_path: Path,
+) -> None:
+    reserved = device_config_path(
+        tmp_path,
+        hostname="CON",
+        ip_address="192.0.2.42",
+        filename_mode=FilenameMode.HOSTNAME,
+    )
+    collision = device_config_path(
+        tmp_path,
+        hostname="edge-lab",
+        ip_address="192.0.2.43",
+        filename_mode=FilenameMode.HOSTNAME,
+        reserved_names=("EDGE-LAB.TXT",),
+    )
+
+    assert reserved.name == "_CON.txt"
+    assert collision.name == "edge-lab_2.txt"
 
 
 def test_device_config_path_keeps_windows_safe_length_and_invalid_name_fallback(

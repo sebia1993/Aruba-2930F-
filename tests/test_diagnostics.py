@@ -96,7 +96,7 @@ def test_v016_identity_diagnostic_code_golden_vector() -> None:
     assert decoded.detail is DiagnosticDetail.IDENTITY_EVIDENCE_MISSING
 
 
-def test_current_release_identity_diagnostic_code_golden_vector() -> None:
+def test_v017_identity_diagnostic_code_golden_vector() -> None:
     code = encode_diagnostic_code(
         version="0.1.7",
         phase=DiagnosticPhase.DEVICE_IDENTITY,
@@ -110,6 +110,23 @@ def test_current_release_identity_diagnostic_code_golden_vector() -> None:
     assert code == "A3F1-010Y50KG-X"
     decoded = decode_diagnostic_code(code)
     assert decoded.version == "0.1.7"
+    assert decoded.detail is DiagnosticDetail.IDENTITY_EVIDENCE_MISSING
+
+
+def test_current_release_identity_diagnostic_code_golden_vector() -> None:
+    code = encode_diagnostic_code(
+        version="0.1.8",
+        phase=DiagnosticPhase.DEVICE_IDENTITY,
+        error_code=ErrorCode.MODEL_UNSUPPORTED,
+        status=DiagnosticStatus.FAILED,
+        host_key_attempts=1,
+        backup_attempts=1,
+        detail=DiagnosticDetail.IDENTITY_EVIDENCE_MISSING,
+    )
+
+    assert code == "A3F1-011250KG-G"
+    decoded = decode_diagnostic_code(code)
+    assert decoded.version == "0.1.8"
     assert decoded.detail is DiagnosticDetail.IDENTITY_EVIDENCE_MISSING
 
 

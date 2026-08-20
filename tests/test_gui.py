@@ -44,6 +44,7 @@ from aruba2930f_backup.models import (
     HostKeyObservation,
     HostKeyTrustState,
 )
+from aruba2930f_backup.storage import FilenameMode
 
 
 @pytest.fixture(scope="module")
@@ -205,10 +206,40 @@ def test_main_window_defaults_and_request_are_session_only(
     assert request.targets == ("192.0.2.10", "198.51.100.8")
     assert request.port == 22
     assert request.concurrency == 10
+    assert [
+        window.filename_mode_input.itemText(index)
+        for index in range(window.filename_mode_input.count())
+    ] == ["장비 이름", "IP", "장비 이름(IP)"]
+    assert window.filename_mode_input.currentData() == FilenameMode.HOSTNAME_IP.value
+    assert request.filename_mode is FilenameMode.HOSTNAME_IP
     assert request.username == "operator"
     assert request.password == "secret"
     assert request.enable_password == "enable-secret"
     window.close()
+
+
+@pytest.mark.gui
+def test_filename_mode_selection_is_session_only(app: QApplication, tmp_path: Path) -> None:
+    window = MainWindow(service=FakeService(tmp_path))
+    window.ip_input.setPlainText("192.0.2.10")
+    window.username_input.setText("operator")
+    window.password_input.setText("secret")
+    window.output_input.setText(str(tmp_path))
+    window.filename_mode_input.setCurrentIndex(
+        window.filename_mode_input.findData(FilenameMode.IP.value)
+    )
+
+    assert window.build_request().filename_mode is FilenameMode.IP
+    window._set_running(True)
+    assert not window.filename_mode_input.isEnabled()
+    window._set_running(False)
+    assert window.filename_mode_input.isEnabled()
+    assert window.filename_mode_input.currentData() == FilenameMode.IP.value
+    window.close()
+
+    replacement = MainWindow(service=FakeService(tmp_path))
+    assert replacement.filename_mode_input.currentData() == FilenameMode.HOSTNAME_IP.value
+    replacement.close()
 
 
 @pytest.mark.gui
@@ -403,6 +434,45 @@ def test_collector_service_writes_config_report_and_sanitized_log(tmp_path: Path
     assert "fixture-edge" not in log_text
     assert "secret-password" not in log_text
     assert "enable-secret" not in log_text
+
+
+@pytest.mark.parametrize(
+    ("filename_mode", "expected_name"),
+    (
+        (FilenameMode.HOSTNAME, "fixture-edge.txt"),
+        (FilenameMode.IP, "192.0.2.10.txt"),
+    ),
+)
+def test_collector_service_applies_selected_filename_mode(
+    tmp_path: Path,
+    filename_mode: FilenameMode,
+    expected_name: str,
+) -> None:
+    collector = FakeCollector()
+    outcome = CollectorBackupService(collector).run(
+        BackupRequest(
+            targets=("192.0.2.10",),
+            port=22,
+            username="operator",
+            password="secret-password",
+            enable_password=None,
+            concurrency=1,
+            output_directory=tmp_path,
+            filename_mode=filename_mode,
+        ),
+        BackupCallbacks(
+            on_event=lambda _event: None,
+            request_host_key_approval=lambda _checks: False,
+            cancel_event=threading.Event(),
+        ),
+    )
+
+    assert collector.result is not None
+    assert collector.result.config_path is not None
+    assert collector.result.config_path.name == expected_name
+    workbook = load_workbook(outcome.report_path, data_only=True)
+    assert Path(workbook["Devices"]["K2"].value).name == expected_name
+    workbook.close()
 
 
 def test_workbook_write_failure_has_report_diagnostic_code(
@@ -730,6 +800,9 @@ def test_retry_exhausted_button_runs_only_captured_subset_with_new_password(
     window.port_input.setValue(2222)
     window.username_input.setText("retry-operator")
     window.concurrency_input.setValue(3)
+    window.filename_mode_input.setCurrentIndex(
+        window.filename_mode_input.findData(FilenameMode.IP.value)
+    )
     window.password_input.setText("new-password")
     window.retry_exhausted_button.click()
     _wait_until(app, lambda: len(service.requests) == 2 and window.start_button.isEnabled())
@@ -738,6 +811,8 @@ def test_retry_exhausted_button_runs_only_captured_subset_with_new_password(
     assert service.requests[1].port == 2222
     assert service.requests[1].username == "retry-operator"
     assert service.requests[1].concurrency == 3
+    assert service.requests[0].filename_mode is FilenameMode.HOSTNAME_IP
+    assert service.requests[1].filename_mode is FilenameMode.IP
     assert service.requests[1].password == "new-password"
     assert window.result_table.rowCount() == 1
     assert service.requests[0].output_directory == service.requests[1].output_directory
@@ -941,6 +1016,7 @@ def test_cancel_handler_does_not_block_on_slow_transport_close(app: QApplication
     window = MainWindow(service=SlowCancelService())
     window.show()
     window._set_running(True)
+    assert not window.filename_mode_input.isEnabled()
     window._thread = cast(QThread, ThreadSentinel())
     window._cancel_event = threading.Event()
 

@@ -20,6 +20,7 @@ from PySide6.QtGui import QBrush, QCloseEvent, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -65,6 +66,7 @@ from .models import (
 )
 from .reporting import ReportSummary, SanitizedJsonlLogger, write_result_workbook
 from .storage import (
+    FilenameMode,
     create_run_directory,
     default_output_directory,
     device_config_path,
@@ -121,6 +123,7 @@ class BackupRequest:
     enable_password: str | None = field(repr=False)
     concurrency: int
     output_directory: Path
+    filename_mode: FilenameMode = FilenameMode.HOSTNAME_IP
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +281,7 @@ class CollectorBackupService:
         self,
         run_directory: Path,
         results: Sequence[DeviceResult],
+        filename_mode: FilenameMode,
     ) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         for result in results:
@@ -288,6 +292,7 @@ class CollectorBackupService:
                         run_directory,
                         hostname=result.hostname,
                         ip_address=result.target.ip,
+                        filename_mode=filename_mode,
                     )
                     stored = write_config_atomic(config_path, result.config_text)
                     result.config_sha256 = stored.sha256
@@ -575,7 +580,7 @@ class CollectorBackupService:
                 )
         results = [by_endpoint[target.endpoint] for target in targets]
 
-        records = self._save_results(run_directory, results)
+        records = self._save_results(run_directory, results, request.filename_mode)
         diagnostic_counts = Counter(
             str(record["diagnostic_code"]) for record in records if record.get("diagnostic_code")
         )
@@ -1144,14 +1149,27 @@ class MainWindow(QMainWindow):
         self.concurrency_input.setRange(1, 20)
         self.concurrency_input.setValue(10)
         options_layout.addWidget(self.concurrency_input, 0, 1)
-        options_layout.addWidget(QLabel("결과 저장 위치"), 1, 0)
+        options_layout.addWidget(QLabel("파일 이름 형식"), 1, 0)
+        self.filename_mode_input = QComboBox(options_group)
+        self.filename_mode_input.setObjectName("filenameModeInput")
+        for label, mode in (
+            ("장비 이름", FilenameMode.HOSTNAME),
+            ("IP", FilenameMode.IP),
+            ("장비 이름(IP)", FilenameMode.HOSTNAME_IP),
+        ):
+            self.filename_mode_input.addItem(label, mode.value)
+        self.filename_mode_input.setCurrentIndex(
+            self.filename_mode_input.findData(FilenameMode.HOSTNAME_IP.value)
+        )
+        options_layout.addWidget(self.filename_mode_input, 1, 1)
+        options_layout.addWidget(QLabel("결과 저장 위치"), 2, 0)
         self.output_input = QLineEdit(str(default_output_directory()), options_group)
         self.output_input.setObjectName("outputInput")
-        options_layout.addWidget(self.output_input, 1, 1)
+        options_layout.addWidget(self.output_input, 2, 1)
         self.browse_button = QPushButton("찾아보기…", options_group)
         self.browse_button.setObjectName("browseOutputButton")
         self.browse_button.clicked.connect(self._browse_output)
-        options_layout.addWidget(self.browse_button, 1, 2)
+        options_layout.addWidget(self.browse_button, 2, 2)
         self.trust_keys_button = QPushButton("SSH 장비 지문 관리…", options_group)
         self.trust_keys_button.setObjectName("trustKeysButton")
         self.trust_keys_button.clicked.connect(self._manage_trusted_keys)
@@ -1284,7 +1302,7 @@ class MainWindow(QMainWindow):
                 "실행 옵션 영역",
                 "BACKUP-OPTIONS-SECTION",
                 "메인 화면 > 실행 옵션",
-                "동시 접속 수와 결과 저장 위치 및 SSH 장비 지문 관리를 제공합니다.",
+                "동시 접속 수, 파일 이름 형식, 결과 저장 위치와 SSH 장비 지문 관리를 제공합니다.",
             ),
             (
                 self.concurrency_input,
@@ -1292,6 +1310,13 @@ class MainWindow(QMainWindow):
                 "BACKUP-CONCURRENCY",
                 "메인 화면 > 실행 옵션",
                 "동시에 처리할 장비 수를 지정합니다.",
+            ),
+            (
+                self.filename_mode_input,
+                "파일 이름 형식 선택",
+                "BACKUP-FILENAME-MODE",
+                "메인 화면 > 실행 옵션",
+                "장비별 설정 TXT 파일의 이름 형식을 선택합니다.",
             ),
             (
                 self.output_input,
@@ -1424,6 +1449,10 @@ class MainWindow(QMainWindow):
             raise ValueError("비밀번호를 입력하세요.")
         if not output_text:
             raise ValueError("결과 저장 위치를 선택하세요.")
+        try:
+            filename_mode = FilenameMode(str(self.filename_mode_input.currentData()))
+        except ValueError as exc:
+            raise ValueError("파일 이름 형식을 선택하세요.") from exc
         return BackupRequest(
             targets=targets,
             port=self.port_input.value(),
@@ -1432,6 +1461,7 @@ class MainWindow(QMainWindow):
             enable_password=self.enable_password_input.text() or None,
             concurrency=self.concurrency_input.value(),
             output_directory=Path(output_text).expanduser(),
+            filename_mode=filename_mode,
         )
 
     @Slot()
@@ -1791,6 +1821,7 @@ class MainWindow(QMainWindow):
             self.password_input,
             self.enable_password_input,
             self.concurrency_input,
+            self.filename_mode_input,
             self.output_input,
             self.browse_button,
             self.trust_keys_button,

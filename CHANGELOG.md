@@ -5,6 +5,24 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-08-21
+
+### 추가
+
+- 실행 옵션에서 장비별 TXT 파일 이름을 `장비 이름`, `IP`, `장비 이름(IP)` 중
+  선택하고 새 실행마다 선택값을 고정하는 세션 전용 콤보박스
+- F12 개발자 검사기의 파일 이름 형식 선택 요소 ID `BACKUP-FILENAME-MODE`
+
+### 변경
+
+- 기본값은 기존 `<hostname>(<ip>).txt` 형식을 유지하고, 장비명이 없으면 모든
+  모드에서 `<ip>.txt`, 동일 이름이면 `_2`부터 숫자 접미사를 사용
+
+### 보안
+
+- 파일 이름 선택이 SSH 명령, 진단 코드와 운영 로그의 비민감정보 경계를
+  변경하지 않도록 기존 수집 및 저장 계약 유지
+
 ## [0.1.7] - 2026-08-21
 
 ### 변경
@@ -179,7 +197,8 @@
 - 자격증명과 장비 목록을 세션에만 유지하고 운영 로그에서 민감정보 제거
 - 실제 2930F 미검증 및 미서명 바이너리임을 사전릴리즈에 명시
 
-[Unreleased]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.4...v0.1.5
