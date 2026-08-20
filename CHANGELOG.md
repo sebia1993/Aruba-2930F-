@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-21
+
+### 변경
+
+- 장비명이 확인된 설정 백업 파일을 `<hostname>(<ip>).txt` 형식으로 저장하고,
+  같은 이름이 이미 있으면 `_2`부터 숫자 접미사를 추가
+- 복잡하지만 유효한 EXEC 프롬프트에서는 장비명을 추정하지 않고, 이미 수집한
+  `running-config`의 유일한 최상위 `hostname`을 결과 화면과 Excel에 보완
+- 프롬프트와 설정 모두에서 장비명을 확인하지 못하면 기존 `<ip>.txt` 대체 유지
+
+### 보안
+
+- SSH 장비 지문, 정확한 EXEC 프롬프트, 명령 순서, 읽기 전용 허용 목록과
+  `show running-config` 1회 규칙을 유지하며 장비명을 진단 코드와 로그에 추가하지 않음
+
 ## [0.1.6] - 2026-08-20
 
 ### 수정
@@ -164,7 +179,8 @@
 - 자격증명과 장비 목록을 세션에만 유지하고 운영 로그에서 민감정보 제거
 - 실제 2930F 미검증 및 미서명 바이너리임을 사전릴리즈에 명시
 
-[Unreleased]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.3...v0.1.4

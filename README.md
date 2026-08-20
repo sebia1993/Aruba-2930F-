@@ -4,7 +4,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 수집하는 Windows용 GUI 도구입니다. 장비 설정을 변경하지 않으며, 수집 전에
 항상 `no page`를 적용해 수동으로 페이지를 넘기지 않고 한 번에 백업합니다.
 
-> **릴리즈 상태:** v0.1.6은 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
+> **릴리즈 상태:** v0.1.7은 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
 > 로컬 파일 시스템을 사용하며, 실제 Aruba 2930F에서의 동작을 증명하지는
 > 않습니다. 현장 도입 전 별도 검증이 필요합니다.
 
@@ -25,13 +25,13 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 ## 다운로드와 실행
 
 1. GitHub Releases에서
-   `Aruba2930FConfigBackup_v0.1.6_windows_x64.zip`과 같은 이름의
+   `Aruba2930FConfigBackup_v0.1.7_windows_x64.zip`과 같은 이름의
    `.sha256` 파일을 내려받습니다.
 2. PowerShell에서 해시를 확인합니다.
 
    ```powershell
-   Get-FileHash .\Aruba2930FConfigBackup_v0.1.6_windows_x64.zip -Algorithm SHA256
-   Get-Content .\Aruba2930FConfigBackup_v0.1.6_windows_x64.zip.sha256
+   Get-FileHash .\Aruba2930FConfigBackup_v0.1.7_windows_x64.zip -Algorithm SHA256
+   Get-Content .\Aruba2930FConfigBackup_v0.1.7_windows_x64.zip.sha256
    ```
 
 3. ZIP 전체를 쓰기 가능한 로컬 폴더에 압축 해제합니다. ZIP 안의 EXE만
@@ -96,9 +96,11 @@ ArubaOS-Switch 로그인 배너의 ANSI/백스페이스 제어 문자를 정리�
 
 EXEC 프롬프트는 ANSI·백스페이스를 정리한 뒤 한 줄이고 `#` 또는 `>`로 끝나는
 정확한 종료 토큰으로 취급합니다. 공백, 괄호형 표시 래퍼나 `+`가 있어도
-수집할 수 있지만 단순 호스트명 형식이 아니면 결과의 Hostname은 비워 두고
-백업 파일명에는 장비 IP를 사용합니다. `switch(config)#`와
-`switch(vlan-10)#`처럼 장비 이름 뒤에 CLI 모드가 붙은 값은 계속 거부합니다.
+수집할 수 있습니다. 단순 프롬프트에서 호스트명을 얻지 못하면 이미 검증해
+수집한 `running-config`의 유일한 최상위 `hostname`을 보완값으로 사용합니다.
+두 위치에서도 이름을 확인하지 못하면 Hostname을 비워 두고 백업 파일명에는
+장비 IP만 사용합니다. `switch(config)#`와 `switch(vlan-10)#`처럼 장비 이름
+뒤에 CLI 모드가 붙은 값은 계속 거부합니다.
 
 ## 지연 재시도 정책
 
@@ -130,9 +132,9 @@ EXEC 프롬프트는 ANSI·백스페이스를 정리한 뒤 한 줄이고 `#` �
 
 ```text
 %USERPROFILE%\Documents\Aruba2930FConfigBackup\backup\YYYY-MM-DD\HHmmss\
-├── <hostname>.txt
-├── <hostname>-<ip>.txt       # 호스트명이 중복될 때
-├── <ip>.txt                  # 호스트명 탐지 실패 시
+├── <hostname>(<ip>).txt
+├── <hostname>(<ip>)_2.txt    # 동일 파일명이 이미 있을 때
+├── <ip>.txt                  # 호스트명 확인 실패 시
 ├── operation.jsonl           # 민감정보를 제거한 단계/오류 진단 로그
 └── result.xlsx
 ```
@@ -243,7 +245,7 @@ Paramiko 4.0.0의 SHA-1 RSA 허용은 저위험 보안 권고
 장비가 SHA-2 기반 SSH를 지원하도록 갱신되면 이 예외와 Paramiko 4 고정을 함께
 제거해야 합니다.
 
-## v0.1.6 범위 밖
+## v0.1.7 범위 밖
 
 - 예약 실행 및 서비스/에이전트 모드
 - Excel/CSV 장비 목록 가져오기
@@ -276,7 +278,7 @@ portable 패키지 빌드:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
-  -PythonPath C:\Python314\python.exe -Version 0.1.6
+  -PythonPath C:\Python314\python.exe -Version 0.1.7
 ```
 
 빌드는 `artifacts\release` 아래에 ZIP, SHA-256, CycloneDX SBOM을 만들고
@@ -295,7 +297,9 @@ verifies SSH host-key fingerprints, applies and validates `no page` before any
 UTF-8 text backups plus an Excel run report. Credentials and the device list are
 session-only. Transient failures use four non-blocking rounds (immediate, then
 5/15/30-second delays); exhausted devices can be manually rerun into a new run
-folder after credentials are re-entered. v0.1.6 is an unsigned prerelease
+folder after credentials are re-entered. A verified running-config hostname is
+used when a complex prompt has no simple hostname, and backup files use the
+`hostname(ip).txt` form when a name is available. v0.1.7 is an unsigned prerelease
 validated with mocks and local package checks, not with a live switch.
 
 ## 라이선스와 보안 제보

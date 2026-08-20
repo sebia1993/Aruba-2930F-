@@ -49,8 +49,13 @@ _SKU_RE = re.compile(r"\b(JL\d{3}A)\b", re.IGNORECASE)
 _SOFTWARE_RE = re.compile(r"\b([A-Z]{2}\.\d{2}\.\d{2}\.\d{4})\b")
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _FAMILY_2930F_RE = re.compile(r"\b2930F\b", re.IGNORECASE)
+_RUNNING_CONFIG_HOSTNAME_RE = re.compile(
+    r'^hostname[ \t]+(?:"([^"\r\n]+)"|([^" \t\r\n]+))[ \t]*$',
+    re.IGNORECASE,
+)
 _APPENDED_CLI_MODE_RE = re.compile(r"^.+\([^()\r\n]+\)[ \t]*[#>]$")
 _MAX_PROMPT_LENGTH = 256
+_MAX_HOSTNAME_LENGTH = 255
 _CONFLICTING_FAMILY_RE = re.compile(
     r"\b(?:2530|2540|2920|2930M|3810M|5400R|6200F|6300[FM]|6400|CX)\b",
     re.IGNORECASE,
@@ -213,6 +218,33 @@ def hostname_from_prompt(prompt: str) -> str | None:
     if len(value) > 255:
         return None
     return value
+
+
+def hostname_from_running_config(config_text: str) -> str | None:
+    """Extract one unambiguous top-level ArubaOS-Switch hostname directive.
+
+    ArubaOS-Switch renders configured hostnames as either ``hostname value`` or
+    ``hostname "value"``. Indented text is intentionally ignored so banner or
+    nested configuration content cannot be promoted to device metadata.
+    """
+
+    candidates: list[str] = []
+    for line in _ANSI_RE.sub("", config_text or "").splitlines():
+        match = _RUNNING_CONFIG_HOSTNAME_RE.fullmatch(line)
+        if match is None:
+            continue
+        value = next(group for group in match.groups() if group is not None)
+        if (
+            not value.strip()
+            or len(value) > _MAX_HOSTNAME_LENGTH
+            or any(not character.isprintable() for character in value)
+        ):
+            continue
+        candidates.append(value)
+
+    if not candidates or any(value != candidates[0] for value in candidates[1:]):
+        return None
+    return candidates[0]
 
 
 def require_valid_prompt(prompt: str) -> str | None:

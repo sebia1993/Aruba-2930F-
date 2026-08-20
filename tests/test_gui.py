@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from openpyxl import load_workbook
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -389,11 +390,17 @@ def test_collector_service_writes_config_report_and_sanitized_log(tmp_path: Path
     assert collector.begin_runs == 1
     assert collector.result.config_text is None
     assert collector.result.config_path is not None
+    assert collector.result.config_path.name == "fixture-edge(192.0.2.10).txt"
     assert collector.result.config_path.read_bytes().endswith(b"\r\n")
     assert collector.result.config_sha256
     assert outcome.report_path.exists()
+    workbook = load_workbook(outcome.report_path, data_only=True)
+    assert workbook["Devices"]["B2"].value == "fixture-edge"
+    assert Path(workbook["Devices"]["K2"].value).name == "fixture-edge(192.0.2.10).txt"
+    workbook.close()
     log_text = (outcome.run_directory / "operation.jsonl").read_text(encoding="utf-8")
     assert "192.0.2.10" not in log_text
+    assert "fixture-edge" not in log_text
     assert "secret-password" not in log_text
     assert "enable-secret" not in log_text
 

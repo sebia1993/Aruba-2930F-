@@ -54,6 +54,73 @@ def test_collection_enforces_exact_command_order_and_normalizes_hash() -> None:
     assert result.sku == "JL253A"
 
 
+def test_complex_prompt_uses_running_config_hostname_without_extra_ssh_round_trip() -> None:
+    factory = ScriptedFactory(
+        lambda _index, target: ScriptedSession(
+            target,
+            prompt="(Aruba 2930F PoE+) #",
+            responses={"show running-config": 'Running configuration:\nhostname "config-edge"\n'},
+        )
+    )
+
+    result = ArubaCollector(factory).collect_one(
+        TARGET,
+        CREDENTIALS,
+        options=FAST_RETRY_OPTIONS,
+    )
+
+    assert result.status is DeviceStatus.SUCCESS
+    assert result.hostname == "config-edge"
+    assert factory.sessions[0].calls == [
+        "connect",
+        "enable",
+        "no page",
+        "terminal width 511",
+        "show version",
+        "show modules",
+        "show running-config",
+        "get prompt",
+        "close",
+    ]
+    assert factory.sessions[0].calls.count("show running-config") == 1
+
+
+def test_simple_prompt_hostname_takes_precedence_over_running_config() -> None:
+    factory = ScriptedFactory(
+        lambda _index, target: ScriptedSession(
+            target,
+            prompt="prompt-edge#",
+            responses={"show running-config": 'hostname "config-edge"\n'},
+        )
+    )
+
+    result = ArubaCollector(factory).collect_one(
+        TARGET,
+        CREDENTIALS,
+        options=FAST_RETRY_OPTIONS,
+    )
+
+    assert result.hostname == "prompt-edge"
+
+
+def test_missing_prompt_and_config_hostname_preserves_ip_filename_fallback() -> None:
+    factory = ScriptedFactory(
+        lambda _index, target: ScriptedSession(
+            target,
+            prompt="(Aruba 2930F PoE+) #",
+            responses={"show running-config": "Running configuration:\nvlan 1\n"},
+        )
+    )
+
+    result = ArubaCollector(factory).collect_one(
+        TARGET,
+        CREDENTIALS,
+        options=FAST_RETRY_OPTIONS,
+    )
+
+    assert result.hostname is None
+
+
 def test_no_enable_secret_skips_enable_but_keeps_no_page_first() -> None:
     factory = ScriptedFactory()
     collector = ArubaCollector(factory)

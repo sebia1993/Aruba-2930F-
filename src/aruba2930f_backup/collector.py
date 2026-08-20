@@ -32,6 +32,7 @@ from .models import (
 )
 from .ssh import NetmikoSessionFactory, SSHSession, SSHSessionFactory
 from .validation import (
+    hostname_from_running_config,
     normalize_config_text,
     require_valid_prompt,
     validate_device_identity,
@@ -496,10 +497,11 @@ class ArubaCollector:
                 )
 
                 _stage(on_event, target, CollectionStage.VERIFYING_PROMPT, attempt)
-                hostname = require_valid_prompt(session.get_prompt())
+                prompt_hostname = require_valid_prompt(session.get_prompt())
                 _raise_if_cancelled(cancellation)
-                identity = replace(identity, hostname=hostname)
                 config_text = normalize_config_text(config_output)
+                hostname = prompt_hostname or hostname_from_running_config(config_text)
+                identity = replace(identity, hostname=hostname)
                 config_sha256 = hashlib.sha256(config_text.encode("utf-8")).hexdigest()
                 finished_at = datetime.now(UTC)
                 result = DeviceResult(

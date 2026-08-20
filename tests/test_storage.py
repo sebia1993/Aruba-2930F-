@@ -28,7 +28,9 @@ def test_create_run_directory_keeps_shape_and_avoids_same_second_collision(
     assert second.relative_to(tmp_path).as_posix() == "2026-08-20/090808"
 
 
-def test_device_config_path_uses_hostname_fallback_and_collision_suffix(tmp_path: Path) -> None:
+def test_device_config_path_pairs_hostname_with_ip_and_uses_collision_suffix(
+    tmp_path: Path,
+) -> None:
     run_directory = tmp_path / "run"
     run_directory.mkdir()
 
@@ -41,6 +43,11 @@ def test_device_config_path_uses_hostname_fallback_and_collision_suffix(tmp_path
     collision = device_config_path(
         run_directory,
         hostname="edge/sw:01",
+        ip_address="192.0.2.10",
+    )
+    other_address = device_config_path(
+        run_directory,
+        hostname="edge/sw:01",
         ip_address="192.0.2.11",
     )
     fallback = device_config_path(
@@ -49,9 +56,29 @@ def test_device_config_path_uses_hostname_fallback_and_collision_suffix(tmp_path
         ip_address="192.0.2.12",
     )
 
-    assert preferred.name == "edge_sw_01.txt"
-    assert collision.name == "edge_sw_01-192.0.2.11.txt"
+    assert preferred.name == "edge_sw_01(192.0.2.10).txt"
+    assert collision.name == "edge_sw_01(192.0.2.10)_2.txt"
+    assert other_address.name == "edge_sw_01(192.0.2.11).txt"
     assert fallback.name == "192.0.2.12.txt"
+
+
+def test_device_config_path_keeps_windows_safe_length_and_invalid_name_fallback(
+    tmp_path: Path,
+) -> None:
+    long_name = device_config_path(
+        tmp_path,
+        hostname="x" * 200,
+        ip_address="192.0.2.20",
+    )
+    invalid_name = device_config_path(
+        tmp_path,
+        hostname='<>:"/\\|?*',
+        ip_address="192.0.2.21",
+    )
+
+    assert long_name.name == f"{'x' * 120}(192.0.2.20).txt"
+    assert len(long_name.name) < 255
+    assert invalid_name.name == "192.0.2.21.txt"
 
 
 def test_write_config_atomic_uses_utf8_crlf_and_returns_digest(tmp_path: Path) -> None:

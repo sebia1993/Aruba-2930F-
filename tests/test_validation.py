@@ -8,6 +8,7 @@ from aruba2930f_backup.validation import (
     InputValidationError,
     contains_pager_marker,
     hostname_from_prompt,
+    hostname_from_running_config,
     normalize_config_text,
     parse_ipv4_targets,
     require_valid_prompt,
@@ -214,6 +215,42 @@ def test_prompt_hostname_requires_single_exec_prompt() -> None:
     with pytest.raises(CollectionFailure) as captured:
         require_valid_prompt("not a prompt")
     assert captured.value.code is ErrorCode.PROMPT_PARSE_FAILED
+
+
+@pytest.mark.parametrize(
+    ("config_text", "expected"),
+    (
+        ('Running configuration:\r\nhostname "edge-lab"\r\n', "edge-lab"),
+        ("hostname edge-lab\nvlan 1\n", "edge-lab"),
+        ('hostname "floor 3 edge"\n', "floor 3 edge"),
+        ('\x1b[32mhostname "edge-lab"\x1b[0m\n', "edge-lab"),
+        ('hostname "edge-lab"\nhostname "edge-lab"\n', "edge-lab"),
+    ),
+)
+def test_running_config_hostname_accepts_unambiguous_top_level_forms(
+    config_text: str,
+    expected: str,
+) -> None:
+    assert hostname_from_running_config(config_text) == expected
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    (
+        "no hostname edge-lab\n",
+        " hostname nested-value\n",
+        'hostname "unterminated\n',
+        "hostname unquoted value\n",
+        'hostname ""\n',
+        'hostname "bad\tvalue"\n',
+        f'hostname "{"x" * 256}"\n',
+        'hostname "edge-one"\nhostname "edge-two"\n',
+    ),
+)
+def test_running_config_hostname_ignores_missing_malformed_or_ambiguous_values(
+    config_text: str,
+) -> None:
+    assert hostname_from_running_config(config_text) is None
 
 
 @pytest.mark.parametrize(

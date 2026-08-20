@@ -71,11 +71,15 @@ def create_run_directory(
     raise FileExistsError("하루 범위에서 사용할 수 있는 실행 폴더를 찾지 못했습니다.")
 
 
-def _safe_component(value: str, *, fallback: str) -> str:
+def _clean_component(value: str) -> str:
     cleaned = _INVALID_FILENAME_CHARACTERS.sub("_", value.strip())
-    cleaned = _WHITESPACE.sub("_", cleaned).strip(" ._")
+    return _WHITESPACE.sub("_", cleaned).strip(" ._")
+
+
+def _safe_component(value: str, *, fallback: str) -> str:
+    cleaned = _clean_component(value)
     if not cleaned:
-        cleaned = _INVALID_FILENAME_CHARACTERS.sub("_", fallback.strip()).strip(" ._")
+        cleaned = _clean_component(fallback)
     if not cleaned:
         cleaned = "device"
     if cleaned.split(".", maxsplit=1)[0].upper() in _WINDOWS_RESERVED_NAMES:
@@ -92,25 +96,21 @@ def device_config_path(
 ) -> Path:
     """Choose a non-conflicting ``.txt`` path for a device.
 
-    A detected hostname is preferred.  A repeated hostname gains an IP suffix;
-    if that also collides, a numeric suffix is used.  Comparisons are
-    case-insensitive to match Windows filesystem behavior.
+    A detected hostname is paired with the device IP. If the resulting name
+    collides, a numeric suffix is used. Comparisons are case-insensitive to
+    match Windows filesystem behavior.
     """
 
     directory = Path(run_directory)
     fallback_stem = _safe_component(ip_address, fallback="device")
     hostname_stem = _safe_component(hostname or "", fallback=fallback_stem)
-    detected_hostname = bool(hostname and hostname.strip())
+    detected_hostname = bool(hostname and _clean_component(hostname))
 
     occupied = {name.casefold() for name in reserved_names}
     if directory.exists():
         occupied.update(path.name.casefold() for path in directory.iterdir() if path.is_file())
 
-    preferred = f"{hostname_stem}.txt"
-    if preferred.casefold() not in occupied:
-        return directory / preferred
-
-    base = f"{hostname_stem}-{fallback_stem}" if detected_hostname else fallback_stem
+    base = f"{hostname_stem}({fallback_stem})" if detected_hostname else fallback_stem
     candidate = f"{base}.txt"
     counter = 2
     while candidate.casefold() in occupied:

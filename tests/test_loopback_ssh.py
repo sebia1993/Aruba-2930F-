@@ -147,7 +147,7 @@ def test_production_ssh_stack_accepts_complex_exec_prompt_as_opaque_token(tmp_pa
         )
 
         assert result.status is DeviceStatus.SUCCESS
-        assert result.hostname is None
+        assert result.hostname == "edge-lab"
         assert wait_for(lambda: "show running-config" in server.commands)
         assert server.commands.count("show running-config") == 1
         assert server.errors == []
