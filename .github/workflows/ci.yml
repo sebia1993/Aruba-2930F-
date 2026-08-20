@@ -46,8 +46,11 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --no-input pip==26.2.1 setuptools==84.0.0
+          if ($LASTEXITCODE -ne 0) { throw "Bootstrap tool installation failed." }
           python -m pip install --no-input -r requirements-lock.txt -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { throw "Locked dependency installation failed." }
           python -m pip install --no-input --no-deps -e .
+          if ($LASTEXITCODE -ne 0) { throw "Editable package installation failed." }
 
       - name: Run safety, lint, typing, tests, coverage, and audit
         shell: pwsh

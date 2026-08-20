@@ -13,12 +13,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  windows-build:
+  windows_build:
     name: Verify tag and build Windows assets
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      verified_commit: ${{ steps.release_ref.outputs.commit }}
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONIOENCODING: utf-8
@@ -45,35 +47,40 @@ jobs:
             requirements-dev.txt
 
       - name: Require a version tag on the current main commit
+        id: release_ref
         shell: pwsh
         run: |
-          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "Release tag must use vMAJOR.MINOR.PATCH: $env:RELEASE_TAG"
-          }
-          $tagType = git cat-file -t "refs/tags/$env:RELEASE_TAG"
-          if ($LASTEXITCODE -ne 0 -or $tagType.Trim() -ne "tag") {
-            throw "Release tag must be an annotated Git tag: $env:RELEASE_TAG"
-          }
-          git fetch --no-tags origin main
+          python tools/check_release_ref.py `
+            --tag $env:RELEASE_TAG `
+            --event-sha $env:GITHUB_SHA
           if ($LASTEXITCODE -ne 0) {
-            throw "Could not fetch origin/main for the release gate."
+            throw "Release ref verification failed."
           }
-          $tagCommit = git rev-parse "$env:RELEASE_TAG^{commit}"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not resolve the release tag commit."
+          $verifiedCommit = git rev-parse --verify "HEAD^{commit}"
+          if ($LASTEXITCODE -ne 0 -or $verifiedCommit -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Could not record the verified checkout commit."
           }
-          $mainCommit = git rev-parse "origin/main^{commit}"
-          if ($LASTEXITCODE -ne 0 -or $tagCommit.Trim() -ne $mainCommit.Trim()) {
-            throw "Release tag must point to the current origin/main commit."
-          }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT `
+            -Value "commit=$($verifiedCommit.Trim())" `
+            -Encoding utf8
+
+      - name: Require synchronized release version
+        shell: pwsh
+        run: |
           python tools/check_version.py --tag $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release version verification failed."
+          }
 
       - name: Install locked runtime and development tools
         shell: pwsh
         run: |
           python -m pip install --no-input pip==26.2.1 setuptools==84.0.0
+          if ($LASTEXITCODE -ne 0) { throw "Bootstrap tool installation failed." }
           python -m pip install --no-input -r requirements-lock.txt -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { throw "Locked dependency installation failed." }
           python -m pip install --no-input --no-deps -e .
+          if ($LASTEXITCODE -ne 0) { throw "Editable package installation failed." }
 
       - name: Run release validation gates
         shell: pwsh
@@ -95,12 +102,13 @@ jobs:
 
   publish-prerelease:
     name: Publish verified prerelease assets
-    needs: windows-build
+    needs: windows_build
     runs-on: windows-latest
     timeout-minutes: 10
     permissions:
       contents: write
     env:
+      EXPECTED_COMMIT: ${{ needs.windows_build.outputs.verified_commit }}
       RELEASE_TAG: ${{ github.ref_name }}
 
     steps:
@@ -110,21 +118,144 @@ jobs:
           name: Aruba2930FConfigBackup-${{ github.ref_name }}-windows-x64
           path: artifacts/release
 
-      - name: Create GitHub prerelease
+      - name: Reverify provenance and create GitHub prerelease
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            throw "GitHub release already exists and will not be overwritten: $env:RELEASE_TAG"
+          $ErrorActionPreference = "Stop"
+          if ($env:EXPECTED_COMMIT -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Verified build commit output is missing or malformed."
           }
+          if (-not [string]::Equals(
+            $env:EXPECTED_COMMIT,
+            $env:GITHUB_SHA,
+            [System.StringComparison]::OrdinalIgnoreCase
+          )) {
+            throw "Verified build commit does not match the release event commit."
+          }
+
+          $tagRefJson = gh api `
+            "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not resolve the remote release tag ref."
+          }
+          $tagRef = $tagRefJson | ConvertFrom-Json
+          if ($tagRef.object.type -ne "tag") {
+            throw "Remote release tag is not annotated."
+          }
+          $tagObjectJson = gh api `
+            "repos/$env:GITHUB_REPOSITORY/git/tags/$($tagRef.object.sha)"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not resolve the annotated release tag object."
+          }
+          $tagObject = $tagObjectJson | ConvertFrom-Json
+          if (
+            $tagObject.object.type -ne "commit" -or
+            -not [string]::Equals(
+              $tagObject.object.sha,
+              $env:EXPECTED_COMMIT,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )
+          ) {
+            throw "Remote release tag moved or does not point directly to the verified commit."
+          }
+
+          $mainRefJson = gh api `
+            "repos/$env:GITHUB_REPOSITORY/git/ref/heads/main"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not resolve the remote main ref."
+          }
+          $mainRef = $mainRefJson | ConvertFrom-Json
+          if (
+            $mainRef.object.type -ne "commit" -or
+            -not [string]::Equals(
+              $mainRef.object.sha,
+              $env:EXPECTED_COMMIT,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )
+          ) {
+            throw "Remote main moved after the verified build."
+          }
+
           $version = $env:RELEASE_TAG.Substring(1)
           $releaseRoot = Join-Path $PWD "artifacts/release"
-          $zip = Join-Path $releaseRoot "Aruba2930FConfigBackup_v${version}_windows_x64.zip"
+          $zipName = "Aruba2930FConfigBackup_v${version}_windows_x64.zip"
+          $shaName = "$zipName.sha256"
+          $sbomName = "Aruba2930FConfigBackup_v${version}_sbom.cdx.json"
+          $notesName = "release-notes-v${version}.md"
+          $expectedFiles = @($zipName, $shaName, $sbomName, $notesName) | Sort-Object
+          $files = @(
+            Get-ChildItem -LiteralPath $releaseRoot -Recurse -File
+          )
+          $actualFiles = @($files.Name | Sort-Object)
+          $differences = @(
+            Compare-Object -ReferenceObject $expectedFiles -DifferenceObject $actualFiles
+          )
+          if (
+            $files.Count -ne 4 -or
+            $differences.Count -ne 0 -or
+            @($files | Where-Object { $_.DirectoryName -ne $releaseRoot }).Count -ne 0
+          ) {
+            throw "Downloaded artifact does not contain the exact four release inputs."
+          }
+
+          $zip = Join-Path $releaseRoot $zipName
           $sha256 = "$zip.sha256"
-          $sbom = Join-Path $releaseRoot "Aruba2930FConfigBackup_v${version}_sbom.cdx.json"
-          $notes = Join-Path $releaseRoot "release-notes-v${version}.md"
+          $sbom = Join-Path $releaseRoot $sbomName
+          $notes = Join-Path $releaseRoot $notesName
+          $sidecarText = Get-Content -LiteralPath $sha256 -Raw
+          $sidecarPattern = (
+            '\A(?<hash>[0-9A-Fa-f]{64})  (?<name>' +
+            [regex]::Escape($zipName) +
+            ')\r?\n?\z'
+          )
+          $sidecarMatch = [regex]::Match($sidecarText, $sidecarPattern)
+          $actualZipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+          if (
+            -not $sidecarMatch.Success -or
+            -not [string]::Equals(
+              $sidecarMatch.Groups['hash'].Value,
+              $actualZipHash,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )
+          ) {
+            throw "Release ZIP does not match its SHA-256 sidecar."
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+            $buildInfoEntries = @(
+              $archive.Entries | Where-Object {
+                $_.FullName -match '(^|[\\/])BUILD_INFO\.json$'
+              }
+            )
+            if ($buildInfoEntries.Count -ne 1) {
+              throw "Release ZIP must contain exactly one BUILD_INFO.json."
+            }
+            $reader = [System.IO.StreamReader]::new($buildInfoEntries[0].Open())
+            try {
+              $buildInfo = $reader.ReadToEnd() | ConvertFrom-Json
+            } finally {
+              $reader.Dispose()
+            }
+          } finally {
+            $archive.Dispose()
+          }
+          if (
+            $buildInfo.version -ne $version -or
+            $buildInfo.architecture -ne "windows-x64" -or
+            $buildInfo.dirtyTree -ne $false -or
+            -not [string]::Equals(
+              $buildInfo.commit,
+              $env:EXPECTED_COMMIT,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )
+          ) {
+            throw "Release ZIP provenance does not match the verified build."
+          }
+
           gh release create $env:RELEASE_TAG $zip $sha256 $sbom `
             --repo $env:GITHUB_REPOSITORY `
             --verify-tag `
