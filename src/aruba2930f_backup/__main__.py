@@ -56,7 +56,7 @@ def _show_fatal_diagnostic(code: str) -> int:
             try:
                 import ctypes
 
-                ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
+                vars(ctypes)["windll"].user32.MessageBoxW(
                     None,
                     message,
                     "Aruba 2930F 백업 오류",
