@@ -42,6 +42,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__
+from .developer_inspector import DeveloperInspectorController, UiElementMetadata
 from .diagnostics import (
     diagnostic_code_for_exception,
     diagnostic_code_for_result,
@@ -68,6 +70,25 @@ from .storage import (
     device_config_path,
     write_config_atomic,
 )
+
+_GUI_SOURCE_PATH = "src/aruba2930f_backup/gui.py"
+
+
+def _ui_metadata(
+    name_ko: str,
+    stable_id: str,
+    screen_path: str,
+    purpose: str,
+) -> UiElementMetadata:
+    """Build fixed inspector metadata without consulting runtime widget state."""
+
+    return UiElementMetadata(
+        name_ko=name_ko,
+        stable_id=stable_id,
+        screen_path=screen_path,
+        source_path=_GUI_SOURCE_PATH,
+        purpose=purpose,
+    )
 
 
 def _value_at(value: object, path: str, default: Any = "") -> Any:
@@ -670,8 +691,10 @@ class DiagnosticCodesDialog(QDialog):
         *,
         title: str = "진단 코드",
         parent: QWidget | None = None,
+        developer_inspector: DeveloperInspectorController | None = None,
     ) -> None:
         super().__init__(parent)
+        self.developer_inspector = developer_inspector
         self.setWindowTitle(title)
         self.setObjectName("diagnosticCodesDialog")
         self.setMinimumWidth(440)
@@ -688,11 +711,11 @@ class DiagnosticCodesDialog(QDialog):
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
 
-        codes = QLabel(self.copy_text, self)
-        codes.setObjectName("diagnosticCodesText")
-        codes.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        codes.setStyleSheet("font-family: Consolas, monospace; font-weight: 600;")
-        layout.addWidget(codes)
+        self.codes_label = QLabel(self.copy_text, self)
+        self.codes_label.setObjectName("diagnosticCodesText")
+        self.codes_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.codes_label.setStyleSheet("font-family: Consolas, monospace; font-weight: 600;")
+        layout.addWidget(self.codes_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
         self.copy_button = QPushButton("진단 코드 복사", self)
@@ -701,6 +724,51 @@ class DiagnosticCodesDialog(QDialog):
         buttons.addButton(self.copy_button, QDialogButtonBox.ButtonRole.ActionRole)
         buttons.rejected.connect(self.close)
         layout.addWidget(buttons)
+        self.close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        self._register_developer_inspector(layout)
+
+    def _register_developer_inspector(self, layout: QVBoxLayout) -> None:
+        inspector = self.developer_inspector
+        if inspector is None:
+            return
+        path = "진단 코드"
+        inspector.attach_host_layout(self, layout)
+        inspector.register_widget(
+            self,
+            _ui_metadata(
+                "진단 코드 창",
+                "DIAGNOSTIC-CODES-DIALOG",
+                path,
+                "실패 진단 코드를 장비 식별자 없이 집계해 표시합니다.",
+            ),
+        )
+        inspector.register_widget(
+            self.codes_label,
+            _ui_metadata(
+                "진단 코드 목록",
+                "DIAGNOSTIC-CODES-TEXT",
+                path,
+                "오프라인 진단 코드와 코드별 발생 횟수를 표시합니다.",
+            ),
+        )
+        inspector.register_widget(
+            self.copy_button,
+            _ui_metadata(
+                "진단 코드 복사 버튼",
+                "DIAGNOSTIC-CODES-COPY",
+                path,
+                "표시된 진단 코드 집계를 클립보드에 복사합니다.",
+            ),
+        )
+        inspector.register_widget(
+            self.close_button,
+            _ui_metadata(
+                "진단 코드 닫기 버튼",
+                "DIAGNOSTIC-CODES-CLOSE",
+                path,
+                "진단 코드 창을 닫습니다.",
+            ),
+        )
 
     @Slot()
     def _copy_codes(self) -> None:
@@ -710,8 +778,15 @@ class DiagnosticCodesDialog(QDialog):
 class HostKeyApprovalDialog(QDialog):
     """Review unknown SHA-256 fingerprints; changed keys are never approvable."""
 
-    def __init__(self, checks: Sequence[object], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        checks: Sequence[object],
+        parent: QWidget | None = None,
+        *,
+        developer_inspector: DeveloperInspectorController | None = None,
+    ) -> None:
         super().__init__(parent)
+        self.developer_inspector = developer_inspector
         self.setWindowTitle("SSH 호스트 키 확인")
         self.resize(820, 400)
         self._checks = tuple(checks)
@@ -725,13 +800,13 @@ class HostKeyApprovalDialog(QDialog):
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
 
-        table = QTableWidget(len(checks), 4, self)
-        table.setObjectName("hostKeyTable")
-        table.setHorizontalHeaderLabels(("장비", "키 유형", "SHA-256 지문", "상태"))
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        table.verticalHeader().setVisible(False)
-        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table = QTableWidget(len(checks), 4, self)
+        self.table.setObjectName("hostKeyTable")
+        self.table.setHorizontalHeaderLabels(("장비", "키 유형", "SHA-256 지문", "상태"))
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         for row, check in enumerate(checks):
             values = (
                 _first_value(check, "target.endpoint", "target.ip", "ip"),
@@ -740,17 +815,18 @@ class HostKeyApprovalDialog(QDialog):
                 _first_value(check, "state", "status"),
             )
             for column, value in enumerate(values):
-                table.setItem(row, column, QTableWidgetItem(str(value)))
-        layout.addWidget(table)
+                self.table.setItem(row, column, QTableWidgetItem(str(value)))
+        layout.addWidget(self.table)
 
+        self.warning_label: QLabel | None = None
         if not self.approval_allowed:
-            warning = QLabel(
+            self.warning_label = QLabel(
                 "저장된 키와 다른 지문이 감지되었습니다. 보안을 위해 이번 실행은 차단됩니다."
             )
-            warning.setObjectName("hostKeyChangedWarning")
-            warning.setStyleSheet("color: #b42318; font-weight: 600;")
-            warning.setWordWrap(True)
-            layout.addWidget(warning)
+            self.warning_label.setObjectName("hostKeyChangedWarning")
+            self.warning_label.setStyleSheet("color: #b42318; font-weight: 600;")
+            self.warning_label.setWordWrap(True)
+            layout.addWidget(self.warning_label)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.Cancel,
@@ -759,10 +835,69 @@ class HostKeyApprovalDialog(QDialog):
         self.approve_button = buttons.button(QDialogButtonBox.StandardButton.Yes)
         self.approve_button.setText("표시된 키 모두 승인")
         self.approve_button.setEnabled(self.approval_allowed)
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+        self.cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        self.cancel_button.setText("취소")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._register_developer_inspector(layout)
+
+    def _register_developer_inspector(self, layout: QVBoxLayout) -> None:
+        inspector = self.developer_inspector
+        if inspector is None:
+            return
+        path = "SSH 호스트 키 확인"
+        inspector.attach_host_layout(self, layout)
+        registrations: tuple[tuple[QWidget, str, str, str], ...] = (
+            (
+                self,
+                "SSH 호스트 키 확인 창",
+                "HOSTKEY-APPROVAL-DIALOG",
+                "새 SSH 호스트 키의 유형과 SHA-256 지문을 검토합니다.",
+            ),
+            (
+                self.table,
+                "SSH 호스트 키 확인 표",
+                "HOSTKEY-APPROVAL-TABLE",
+                "검토할 장비별 SSH 호스트 키 정보를 표시합니다.",
+            ),
+            (
+                self.table.viewport(),
+                "SSH 호스트 키 확인 표 본문",
+                "HOSTKEY-APPROVAL-TABLE-BODY",
+                "장비별 SSH 호스트 키 행이 표시되는 표 본문입니다.",
+            ),
+            (
+                self.table.horizontalHeader(),
+                "SSH 호스트 키 확인 표 머리글",
+                "HOSTKEY-APPROVAL-TABLE-HEADER",
+                "호스트 키 표의 열 이름을 표시합니다.",
+            ),
+            (
+                self.approve_button,
+                "호스트 키 승인 버튼",
+                "HOSTKEY-APPROVAL-ACCEPT",
+                "표시된 새 SSH 호스트 키를 모두 승인합니다.",
+            ),
+            (
+                self.cancel_button,
+                "호스트 키 승인 취소 버튼",
+                "HOSTKEY-APPROVAL-CANCEL",
+                "호스트 키 승인을 취소하고 연결을 중단합니다.",
+            ),
+        )
+        for widget, name, stable_id, purpose in registrations:
+            inspector.register_widget(widget, _ui_metadata(name, stable_id, path, purpose))
+        if self.warning_label is not None:
+            inspector.register_widget(
+                self.warning_label,
+                _ui_metadata(
+                    "호스트 키 변경 경고",
+                    "HOSTKEY-APPROVAL-WARNING",
+                    path,
+                    "저장된 키와 다른 지문이 감지되어 승인이 차단됐음을 알립니다.",
+                ),
+            )
 
     @staticmethod
     def _is_changed(check: object) -> bool:
@@ -778,8 +913,11 @@ class TrustedKeysDialog(QDialog):
         entries: Sequence[object],
         remove_callback: Callable[[Sequence[object]], None] | None,
         parent: QWidget | None = None,
+        *,
+        developer_inspector: DeveloperInspectorController | None = None,
     ) -> None:
         super().__init__(parent)
+        self.developer_inspector = developer_inspector
         self.setWindowTitle("신뢰 SSH 키 관리")
         self.resize(760, 380)
         self._entries = tuple(entries)
@@ -810,16 +948,64 @@ class TrustedKeysDialog(QDialog):
         layout.addWidget(self.table)
 
         actions = QHBoxLayout()
-        remove_button = QPushButton("선택 키 제거", self)
-        remove_button.setObjectName("removeTrustedKeyButton")
-        remove_button.setEnabled(remove_callback is not None)
-        remove_button.clicked.connect(self._remove_selected)
-        close_button = QPushButton("닫기", self)
-        close_button.clicked.connect(self.accept)
-        actions.addWidget(remove_button)
+        self.remove_button = QPushButton("선택 키 제거", self)
+        self.remove_button.setObjectName("removeTrustedKeyButton")
+        self.remove_button.setEnabled(remove_callback is not None)
+        self.remove_button.clicked.connect(self._remove_selected)
+        self.close_button = QPushButton("닫기", self)
+        self.close_button.clicked.connect(self.accept)
+        actions.addWidget(self.remove_button)
         actions.addStretch(1)
-        actions.addWidget(close_button)
+        actions.addWidget(self.close_button)
         layout.addLayout(actions)
+        self._register_developer_inspector(layout)
+
+    def _register_developer_inspector(self, layout: QVBoxLayout) -> None:
+        inspector = self.developer_inspector
+        if inspector is None:
+            return
+        path = "신뢰 SSH 키 관리"
+        inspector.attach_host_layout(self, layout)
+        registrations: tuple[tuple[QWidget, str, str, str], ...] = (
+            (
+                self,
+                "신뢰 SSH 키 관리 창",
+                "HOSTKEY-TRUSTED-DIALOG",
+                "사용자가 승인해 저장한 SSH 호스트 키를 관리합니다.",
+            ),
+            (
+                self.table,
+                "신뢰 SSH 키 표",
+                "HOSTKEY-TRUSTED-TABLE",
+                "저장된 SSH 호스트 키 목록을 표시합니다.",
+            ),
+            (
+                self.table.viewport(),
+                "신뢰 SSH 키 표 본문",
+                "HOSTKEY-TRUSTED-TABLE-BODY",
+                "저장된 SSH 호스트 키 행이 표시되는 표 본문입니다.",
+            ),
+            (
+                self.table.horizontalHeader(),
+                "신뢰 SSH 키 표 머리글",
+                "HOSTKEY-TRUSTED-TABLE-HEADER",
+                "신뢰 키 표의 열 이름을 표시합니다.",
+            ),
+            (
+                self.remove_button,
+                "선택 신뢰 키 제거 버튼",
+                "HOSTKEY-TRUSTED-REMOVE",
+                "선택한 저장 SSH 호스트 키를 확인 후 제거합니다.",
+            ),
+            (
+                self.close_button,
+                "신뢰 키 관리 닫기 버튼",
+                "HOSTKEY-TRUSTED-CLOSE",
+                "신뢰 SSH 키 관리 창을 닫습니다.",
+            ),
+        )
+        for widget, name, stable_id, purpose in registrations:
+            inspector.register_widget(widget, _ui_metadata(name, stable_id, path, purpose))
 
     @Slot()
     def _remove_selected(self) -> None:
@@ -869,9 +1055,12 @@ class MainWindow(QMainWindow):
         self,
         service: BackupServiceProtocol | None = None,
         parent: QWidget | None = None,
+        *,
+        developer_inspector: DeveloperInspectorController | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = service
+        self.developer_inspector = developer_inspector
         self._thread: QThread | None = None
         self._worker: _ServiceWorker | None = None
         self._cancel_thread: threading.Thread | None = None
@@ -1012,6 +1201,188 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         outer.addWidget(self.result_table, stretch=1)
         self.setCentralWidget(central)
+        self._register_developer_inspector(
+            central,
+            outer,
+            target_group,
+            access_group,
+            options_group,
+        )
+
+    def _register_developer_inspector(
+        self,
+        central: QWidget,
+        layout: QVBoxLayout,
+        target_group: QGroupBox,
+        access_group: QGroupBox,
+        options_group: QGroupBox,
+    ) -> None:
+        inspector = self.developer_inspector
+        if inspector is None:
+            return
+        inspector.attach_host_layout(central, layout)
+
+        registrations: tuple[tuple[QWidget, str, str, str, str], ...] = (
+            (
+                self,
+                "메인 창",
+                "MAIN-WINDOW",
+                "메인 화면",
+                "Aruba 2930F 설정 백업 작업을 입력하고 결과를 확인합니다.",
+            ),
+            (
+                target_group,
+                "대상 장비 영역",
+                "BACKUP-TARGET-SECTION",
+                "메인 화면 > 대상 장비",
+                "백업 대상 IPv4 주소와 SSH 포트를 입력하는 영역입니다.",
+            ),
+            (
+                self.ip_input,
+                "대상 장비 입력",
+                "BACKUP-TARGETS",
+                "메인 화면 > 대상 장비",
+                "백업할 장비의 IPv4 주소를 한 줄에 하나씩 입력합니다.",
+            ),
+            (
+                self.port_input,
+                "SSH 포트 입력",
+                "BACKUP-SSH-PORT",
+                "메인 화면 > 대상 장비",
+                "대상 장비에 연결할 SSH 포트를 지정합니다.",
+            ),
+            (
+                access_group,
+                "공통 접속 정보 영역",
+                "BACKUP-ACCESS-SECTION",
+                "메인 화면 > 공통 접속 정보",
+                "이번 실행에서만 사용할 공통 SSH 자격증명을 입력하는 영역입니다.",
+            ),
+            (
+                self.username_input,
+                "사용자 이름 입력",
+                "BACKUP-USERNAME",
+                "메인 화면 > 공통 접속 정보",
+                "SSH 인증에 사용할 공통 사용자 이름을 입력합니다.",
+            ),
+            (
+                self.password_input,
+                "비밀번호 입력",
+                "BACKUP-PASSWORD",
+                "메인 화면 > 공통 접속 정보",
+                "SSH 인증에 사용할 세션 전용 비밀번호를 입력합니다.",
+            ),
+            (
+                self.enable_password_input,
+                "Enable 암호 입력",
+                "BACKUP-ENABLE-PASSWORD",
+                "메인 화면 > 공통 접속 정보",
+                "필요한 장비의 Enable 전환에 사용할 세션 전용 암호를 입력합니다.",
+            ),
+            (
+                options_group,
+                "실행 옵션 영역",
+                "BACKUP-OPTIONS-SECTION",
+                "메인 화면 > 실행 옵션",
+                "동시 접속 수와 결과 저장 위치 및 신뢰 키 관리를 제공합니다.",
+            ),
+            (
+                self.concurrency_input,
+                "동시 접속 수 입력",
+                "BACKUP-CONCURRENCY",
+                "메인 화면 > 실행 옵션",
+                "동시에 처리할 장비 수를 지정합니다.",
+            ),
+            (
+                self.output_input,
+                "결과 저장 위치 입력",
+                "BACKUP-OUTPUT-DIRECTORY",
+                "메인 화면 > 실행 옵션",
+                "이번 실행의 결과를 저장할 상위 폴더를 지정합니다.",
+            ),
+            (
+                self.browse_button,
+                "결과 폴더 찾아보기 버튼",
+                "BACKUP-OUTPUT-BROWSE",
+                "메인 화면 > 실행 옵션",
+                "결과를 저장할 폴더 선택기를 엽니다.",
+            ),
+            (
+                self.trust_keys_button,
+                "신뢰 키 관리 버튼",
+                "HOSTKEY-MANAGEMENT",
+                "메인 화면 > 실행 옵션",
+                "승인해 저장한 SSH 호스트 키 관리 창을 엽니다.",
+            ),
+            (
+                self.start_button,
+                "백업 시작 버튼",
+                "BACKUP-START",
+                "메인 화면 > 작업",
+                "입력값을 검증하고 설정 백업 작업을 시작합니다.",
+            ),
+            (
+                self.cancel_button,
+                "백업 취소 버튼",
+                "BACKUP-CANCEL",
+                "메인 화면 > 작업",
+                "진행 중인 백업 작업의 취소를 요청합니다.",
+            ),
+            (
+                self.retry_exhausted_button,
+                "재시도 소진 장비 다시 시도 버튼",
+                "BACKUP-RETRY-EXHAUSTED",
+                "메인 화면 > 작업",
+                "직전 실행에서 재시도를 소진한 장비만 새 실행으로 다시 처리합니다.",
+            ),
+            (
+                self.open_result_button,
+                "결과 폴더 열기 버튼",
+                "BACKUP-OPEN-RESULT",
+                "메인 화면 > 작업",
+                "완료된 실행의 결과 폴더를 운영체제 탐색기로 엽니다.",
+            ),
+            (
+                self.status_label,
+                "백업 상태 표시",
+                "BACKUP-STATUS",
+                "메인 화면 > 진행 상태",
+                "현재 작업 단계 또는 완료 상태를 표시합니다.",
+            ),
+            (
+                self.progress_bar,
+                "백업 진행률",
+                "BACKUP-PROGRESS",
+                "메인 화면 > 진행 상태",
+                "전체 대상 장비의 처리 진행률을 표시합니다.",
+            ),
+            (
+                self.result_table,
+                "백업 결과 표",
+                "RESULT-TABLE",
+                "메인 화면 > 결과 표",
+                "장비별 백업 진행 상태와 최종 결과 열을 표시합니다.",
+            ),
+            (
+                self.result_table.viewport(),
+                "백업 결과 표 본문",
+                "RESULT-TABLE-BODY",
+                "메인 화면 > 결과 표",
+                "장비별 백업 결과 행이 표시되는 표 본문입니다.",
+            ),
+            (
+                self.result_table.horizontalHeader(),
+                "백업 결과 표 머리글",
+                "RESULT-TABLE-HEADER",
+                "메인 화면 > 결과 표",
+                "백업 결과 표의 열 이름을 표시합니다.",
+            ),
+        )
+        for widget, name, stable_id, screen_path, purpose in registrations:
+            inspector.register_widget(
+                widget,
+                _ui_metadata(name, stable_id, screen_path, purpose),
+            )
 
     @staticmethod
     def parse_targets(text: str) -> tuple[str, ...]:
@@ -1169,7 +1540,11 @@ class MainWindow(QMainWindow):
             approval_latch.accepted = False
             approval_latch.completed.set()
             return
-        dialog = HostKeyApprovalDialog(cast(Sequence[object], checks), self)
+        dialog = HostKeyApprovalDialog(
+            cast(Sequence[object], checks),
+            self,
+            developer_inspector=self.developer_inspector,
+        )
         approval_latch.accepted = (
             dialog.exec() == QDialog.DialogCode.Accepted and dialog.approval_allowed
         )
@@ -1372,7 +1747,11 @@ class MainWindow(QMainWindow):
     def _show_diagnostic_codes(self, counts: dict[str, int]) -> None:
         if self._diagnostic_dialog is not None:
             self._diagnostic_dialog.close()
-        dialog = DiagnosticCodesDialog(counts, parent=self)
+        dialog = DiagnosticCodesDialog(
+            counts,
+            parent=self,
+            developer_inspector=self.developer_inspector,
+        )
         dialog.finished.connect(self._clear_diagnostic_dialog)
         self._diagnostic_dialog = dialog
         dialog.open()
@@ -1445,6 +1824,7 @@ class MainWindow(QMainWindow):
                 remove_method if callable(remove_method) else None,
             ),
             self,
+            developer_inspector=self.developer_inspector,
         )
         dialog.exec()
 
@@ -1474,9 +1854,17 @@ def build_default_service() -> BackupServiceProtocol:
 
 
 def run_gui(service: BackupServiceProtocol | None = None) -> int:
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    if not isinstance(app, QApplication):
+        raise RuntimeError("The existing Qt application is not a QApplication.")
     app.setApplicationName("Aruba2930FConfigBackup")
     app.setOrganizationName("sebia1993")
-    window = MainWindow(service=service)
+    developer_inspector = DeveloperInspectorController(app, f"v{__version__}", app)
+    window = MainWindow(service=service, developer_inspector=developer_inspector)
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        developer_inspector.close()

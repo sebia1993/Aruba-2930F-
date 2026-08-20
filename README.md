@@ -4,7 +4,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 수집하는 Windows용 GUI 도구입니다. 장비 설정을 변경하지 않으며, 수집 전에
 항상 `no page`를 적용해 수동으로 페이지를 넘기지 않고 한 번에 백업합니다.
 
-> **릴리즈 상태:** v0.1.3은 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
+> **릴리즈 상태:** v0.1.4는 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
 > 로컬 파일 시스템을 사용하며, 실제 Aruba 2930F에서의 동작을 증명하지는
 > 않습니다. 현장 도입 전 별도 검증이 필요합니다.
 
@@ -19,18 +19,19 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 - 5/15/30초 지연을 둔 최대 4라운드 transient 재시도
 - 재시도 소진 장비만 새 실행으로 다시 수집하는 수동 재시도
 - 즉시 취소, 15자 오프라인 진단 코드와 민감정보 없는 로그
+- F12로만 활성화하는 민감정보 없는 개발자 UI 식별 모드
 - Python 설치가 필요 없는 Windows x64 portable ZIP 제공
 
 ## 다운로드와 실행
 
 1. GitHub Releases에서
-   `Aruba2930FConfigBackup_v0.1.3_windows_x64.zip`과 같은 이름의
+   `Aruba2930FConfigBackup_v0.1.4_windows_x64.zip`과 같은 이름의
    `.sha256` 파일을 내려받습니다.
 2. PowerShell에서 해시를 확인합니다.
 
    ```powershell
-   Get-FileHash .\Aruba2930FConfigBackup_v0.1.3_windows_x64.zip -Algorithm SHA256
-   Get-Content .\Aruba2930FConfigBackup_v0.1.3_windows_x64.zip.sha256
+   Get-FileHash .\Aruba2930FConfigBackup_v0.1.4_windows_x64.zip -Algorithm SHA256
+   Get-Content .\Aruba2930FConfigBackup_v0.1.4_windows_x64.zip.sha256
    ```
 
 3. ZIP 전체를 쓰기 가능한 로컬 폴더에 압축 해제합니다. ZIP 안의 EXE만
@@ -187,10 +188,28 @@ aruba2930f-diagnose A3F1-010EPMRC-3
 aruba2930f-diagnose --json A3F1-010EPMRC-3 A3F1-010C8W18-V
 ```
 
+## F12 개발자 UI 식별 모드
+
+화면 요소를 설명하기 어려울 때 수정키 없이 **F12**를 누르면 창 위쪽에
+`요소 선택`, `요소 목록`, `종료`가 표시됩니다.
+
+1. **요소 선택**을 누른 뒤 변경하려는 화면 요소를 클릭합니다.
+2. 표시되는 고정 이름, UI 식별자, 화면 위치와 소스 위치를 확인합니다.
+3. **작업 요청 복사**를 눌러 Codex에 붙여 넣고 `현재 현상`과
+   `원하는 변경`만 작성합니다.
+4. F12를 다시 누르거나 **종료**를 눌러 개발자 모드를 끕니다.
+
+개발자 모드는 실행할 때마다 꺼진 상태로 시작하며 환경변수, 명령줄, 설정,
+레지스트리나 파일로 켜거나 유지할 수 없습니다. 요소 목록과 복사 문구는
+소스 코드에 고정된 설명만 사용합니다. 입력한 IP, 사용자 이름, 암호,
+호스트 키 지문, 진단 코드, 표의 결과와 오류 내용은 읽거나 포함하지 않습니다.
+이 기능은 화면 수정 요청을 정확히 전달하기 위한 보조 도구이며 접근 제어나
+보안 경계를 대신하지 않습니다.
+
 ## SSH 알고리즘 호환성
 
 일부 2930F는 SSH 서버 호스트 키로 `ssh-rsa` 서명을 사용하거나
-`diffie-hellman-group14-sha1` KEX만 허용합니다. v0.1.3은 이런 장비와의
+`diffie-hellman-group14-sha1` KEX만 허용합니다. v0.1.4는 이런 장비와의
 호환성을 위해 Paramiko 4.0.0을 고정합니다. 클라이언트와 장비가 더 강한
 알고리즘을 함께 지원하면 강한 알고리즘이 우선되며, 레거시 알고리즘은 필요한
 장비에서만 협상됩니다.
@@ -209,7 +228,7 @@ Paramiko 4.0.0의 SHA-1 RSA 허용은 저위험 보안 권고
 장비가 SHA-2 기반 SSH를 지원하도록 갱신되면 이 예외와 Paramiko 4 고정을 함께
 제거해야 합니다.
 
-## v0.1.3 범위 밖
+## v0.1.4 범위 밖
 
 - 예약 실행 및 서비스/에이전트 모드
 - Excel/CSV 장비 목록 가져오기
@@ -242,7 +261,7 @@ portable 패키지 빌드:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
-  -PythonPath C:\Python314\python.exe -Version 0.1.3
+  -PythonPath C:\Python314\python.exe -Version 0.1.4
 ```
 
 빌드는 `artifacts\release` 아래에 ZIP, SHA-256, CycloneDX SBOM을 만들고
@@ -261,7 +280,7 @@ verifies SSH host-key fingerprints, applies and validates `no page` before any
 UTF-8 text backups plus an Excel run report. Credentials and the device list are
 session-only. Transient failures use four non-blocking rounds (immediate, then
 5/15/30-second delays); exhausted devices can be manually rerun into a new run
-folder after credentials are re-entered. v0.1.3 is an unsigned prerelease
+folder after credentials are re-entered. v0.1.4 is an unsigned prerelease
 validated with mocks and local package checks, not with a live switch.
 
 ## 라이선스와 보안 제보

@@ -29,13 +29,22 @@ def _smoke_test() -> int:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
 
+    from .developer_inspector import DeveloperInspectorController
     from .gui import MainWindow
 
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow()
-    window.show()
-    app.processEvents()
-    window.close()
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    if not isinstance(app, QApplication):
+        raise RuntimeError("The existing Qt application is not a QApplication.")
+    developer_inspector = DeveloperInspectorController(app, f"v{__version__}", app)
+    window = MainWindow(developer_inspector=developer_inspector)
+    try:
+        window.show()
+        app.processEvents()
+        window.close()
+    finally:
+        developer_inspector.close()
     print(json.dumps({"application": "Aruba2930FConfigBackup", "version": __version__, "ok": True}))
     return 0
 

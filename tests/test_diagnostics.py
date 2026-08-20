@@ -49,6 +49,21 @@ def test_golden_diagnostic_code_and_round_trip() -> None:
     assert decoded.detail is DiagnosticDetail.PROMPT_FORMAT
 
 
+def test_current_release_diagnostic_code_golden_vector() -> None:
+    code = encode_diagnostic_code(
+        version="0.1.4",
+        phase=DiagnosticPhase.CONFIG_COLLECTION,
+        error_code=ErrorCode.PROMPT_PARSE_FAILED,
+        status=DiagnosticStatus.RETRY_EXHAUSTED,
+        host_key_attempts=1,
+        backup_attempts=4,
+        detail=DiagnosticDetail.PROMPT_FORMAT,
+    )
+
+    assert code == "A3F1-010JPMRC-T"
+    assert decode_diagnostic_code(code).version == "0.1.4"
+
+
 def test_decoder_accepts_lowercase_and_crockford_typo_aliases() -> None:
     for code in ("a3f1-OLOEPMRC-3", "A3F1-0I0EPMRC-3"):
         assert decode_diagnostic_code(code).code == "A3F1-010EPMRC-3"
