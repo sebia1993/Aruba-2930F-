@@ -5,16 +5,17 @@ from __future__ import annotations
 import ipaddress
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, ClassVar, Protocol, cast
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QDesktopServices
+from PySide6.QtGui import QBrush, QCloseEvent, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
 from .models import (
     CollectionFailure,
     CollectionOptions,
+    CollectionStage,
     Credentials,
     DeviceResult,
     DeviceStatus,
@@ -121,13 +123,22 @@ class BackupServiceProtocol(Protocol):
 class CollectorProtocol(Protocol):
     def begin_run(self) -> None: ...
 
-    def probe_host_keys(
+    def probe_host_keys_round(
         self,
         targets: Sequence[DeviceTarget],
         *,
+        attempt: int,
         options: CollectionOptions | None = None,
         cancel_event: threading.Event | None = None,
+        on_event: Callable[[object], None] | None = None,
     ) -> list[HostKeyCheck]: ...
+
+    def wait_for_retry_delay(
+        self,
+        delay_seconds: float,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> bool: ...
 
     def approve_host_keys(self, checks: Sequence[HostKeyCheck]) -> None: ...
 
@@ -147,8 +158,14 @@ class CollectorProtocol(Protocol):
 class CollectorBackupService:
     """Orchestrate collection, durable storage, and run reporting."""
 
-    def __init__(self, collector: CollectorProtocol) -> None:
+    def __init__(
+        self,
+        collector: CollectorProtocol,
+        *,
+        retry_delays_seconds: tuple[float, ...] | None = None,
+    ) -> None:
         self.collector = collector
+        self._retry_delays_seconds = retry_delays_seconds
 
     def cancel(self) -> None:
         self.collector.cancel()
@@ -183,7 +200,8 @@ class CollectorBackupService:
             DeviceResult(
                 target=check.target,
                 status=status,
-                attempts=check.attempts,
+                attempts=0,
+                host_key_attempts=check.attempts,
                 started_at=now,
                 finished_at=now,
                 duration_seconds=0.0,
@@ -194,13 +212,19 @@ class CollectorBackupService:
         ]
 
     @staticmethod
-    def _cancelled_results(targets: Sequence[DeviceTarget]) -> list[DeviceResult]:
+    def _cancelled_results(
+        targets: Sequence[DeviceTarget],
+        *,
+        host_key_attempts: dict[str, int] | None = None,
+    ) -> list[DeviceResult]:
         now = datetime.now().astimezone()
+        attempts_by_endpoint = host_key_attempts or {}
         return [
             DeviceResult(
                 target=target,
                 status=DeviceStatus.CANCELLED,
                 attempts=0,
+                host_key_attempts=attempts_by_endpoint.get(target.endpoint, 0),
                 started_at=now,
                 finished_at=now,
                 duration_seconds=0.0,
@@ -267,42 +291,183 @@ class CollectorBackupService:
             password=request.password,
             enable_secret=request.enable_password,
         )
-        options = CollectionOptions(concurrency=request.concurrency, max_attempts=4)
+        option_args: dict[str, Any] = {
+            "concurrency": request.concurrency,
+            "max_attempts": 4,
+        }
+        if self._retry_delays_seconds is not None:
+            option_args["retry_delays_seconds"] = self._retry_delays_seconds
+        options = CollectionOptions(**option_args)
 
-        try:
-            checks = self.collector.probe_host_keys(
-                targets,
-                options=options,
-                cancel_event=callbacks.cancel_event,
-            )
-        except CollectionFailure as exc:
-            if exc.code is not ErrorCode.CANCELLED:
-                raise
-            checks = []
-            results = self._cancelled_results(targets)
-        else:
-            rejected = [check for check in checks if check.state is HostKeyTrustState.REJECTED]
+        def forward_event(event: object, *, phase: str) -> None:
+            if (
+                phase == "host_key"
+                and str(_first_value(event, "stage", default="")).lower()
+                == CollectionStage.HOST_KEY_CHECKING.value
+            ):
+                endpoint = str(_first_value(event, "target.endpoint", default=""))
+                attempt_value = _first_value(event, "attempt", default=0)
+                try:
+                    started_attempt = max(0, int(attempt_value))
+                except TypeError, ValueError:
+                    started_attempt = 0
+                if endpoint:
+                    host_key_attempts[endpoint] = max(
+                        started_attempt,
+                        host_key_attempts.get(endpoint, 0),
+                    )
+            forwarded = {
+                "target": _first_value(event, "target", default=None),
+                "stage": _first_value(event, "stage", default="collection"),
+                "round": _first_value(event, "round", default=None),
+                "attempt": _first_value(event, "attempt", default=0),
+                "delay_seconds": _first_value(event, "delay_seconds", default=None),
+                "error_code": _first_value(event, "error_code", default=None),
+                "message": _first_value(event, "message", default=""),
+                "retryable": _first_value(event, "retryable", default=False),
+                "final": _first_value(event, "final", default=False),
+                "phase": phase,
+            }
+            callbacks.on_event(forwarded)
+            logger.log(forwarded)
+
+        def emit_host_key_event(
+            target: DeviceTarget,
+            stage: CollectionStage | str,
+            attempt: int,
+            *,
+            delay_seconds: float | None = None,
+            error_code: ErrorCode | None = None,
+            message: str = "",
+            final: bool = False,
+            round_number: int | None = None,
+        ) -> None:
+            event = {
+                "target": target,
+                "stage": stage,
+                "round": round_number if round_number is not None else attempt,
+                "attempt": attempt,
+                "delay_seconds": delay_seconds,
+                "error_code": error_code,
+                "message": message,
+                "phase": "host_key",
+                "final": final,
+            }
+            callbacks.on_event(event)
+            logger.log(event)
+
+        by_endpoint: dict[str, DeviceResult] = {}
+        host_key_attempts: dict[str, int] = {}
+        pending = list(targets)
+        pending_errors: dict[str, ErrorCode | None] = {}
+        attempt = 1
+        retry_due_at = 0.0
+
+        while pending and not callbacks.cancel_event.is_set():
+            if attempt > 1:
+                remaining = max(0.0, retry_due_at - time.monotonic())
+                for target in pending:
+                    emit_host_key_event(
+                        target,
+                        CollectionStage.RETRY_WAIT,
+                        attempt - 1,
+                        delay_seconds=remaining,
+                        error_code=pending_errors.get(target.endpoint),
+                        message="호스트 키 확인 재시도 대기 중입니다.",
+                        round_number=attempt,
+                    )
+                wait_method = getattr(self.collector, "wait_for_retry_delay", None)
+                elapsed = (
+                    bool(wait_method(remaining, cancel_event=callbacks.cancel_event))
+                    if callable(wait_method)
+                    else not callbacks.cancel_event.wait(timeout=remaining)
+                )
+                if not elapsed:
+                    break
+                for target in pending:
+                    emit_host_key_event(
+                        target,
+                        CollectionStage.RETRY_QUEUED,
+                        attempt - 1,
+                        error_code=pending_errors.get(target.endpoint),
+                        message="호스트 키 확인 재시도를 시작합니다.",
+                        round_number=attempt,
+                    )
+
+            try:
+                checks = self.collector.probe_host_keys_round(
+                    pending,
+                    attempt=attempt,
+                    options=options,
+                    cancel_event=callbacks.cancel_event,
+                    on_event=lambda event: forward_event(event, phase="host_key"),
+                )
+            except CollectionFailure as exc:
+                if exc.code is not ErrorCode.CANCELLED:
+                    raise
+                break
+
+            round_finished_at = time.monotonic()
+            for check in checks:
+                host_key_attempts[check.target.endpoint] = check.attempts
+
+            retryable = [
+                check
+                for check in checks
+                if check.state is HostKeyTrustState.REJECTED
+                and check.retryable
+                and not check.retry_exhausted
+                and attempt < options.max_attempts
+            ]
+            exhausted = [
+                check
+                for check in checks
+                if check.state is HostKeyTrustState.REJECTED
+                and (check.retry_exhausted or (check.retryable and attempt >= options.max_attempts))
+            ]
+            rejected = [
+                check
+                for check in checks
+                if check.state is HostKeyTrustState.REJECTED
+                and check not in retryable
+                and check not in exhausted
+            ]
             changed = [check for check in checks if check.state is HostKeyTrustState.CHANGED]
             unknown = [check for check in checks if check.state is HostKeyTrustState.UNKNOWN]
-            trusted = [check for check in checks if check.state is HostKeyTrustState.TRUSTED]
+
             blocked_results = self._failed_host_key_results(rejected)
+            exhausted_results = self._failed_host_key_results(
+                exhausted,
+                status=DeviceStatus.RETRY_EXHAUSTED,
+            )
+            for result in (*blocked_results, *exhausted_results):
+                by_endpoint[result.target.endpoint] = result
+                emit_host_key_event(
+                    result.target,
+                    result.status.value,
+                    result.host_key_attempts,
+                    error_code=result.error_code,
+                    message=result.error_message,
+                    final=True,
+                )
 
             if changed:
                 callbacks.request_host_key_approval(changed)
-                blocked_results.extend(
-                    self._failed_host_key_results(
-                        changed,
-                        code=ErrorCode.HOST_KEY_CHANGED,
-                        message="저장된 SSH 호스트 키와 현재 지문이 달라 해당 장비를 차단했습니다.",
+                changed_results = self._failed_host_key_results(
+                    changed,
+                    code=ErrorCode.HOST_KEY_CHANGED,
+                    message="저장된 SSH 호스트 키와 현재 지문이 달라 해당 장비를 차단했습니다.",
+                )
+                for result in changed_results:
+                    by_endpoint[result.target.endpoint] = result
+                    emit_host_key_event(
+                        result.target,
+                        CollectionStage.FAILED,
+                        result.host_key_attempts,
+                        error_code=result.error_code,
+                        message=result.error_message,
+                        final=True,
                     )
-                )
-                logger.log(
-                    stage="host_key_verification",
-                    status="failed",
-                    error_code=ErrorCode.HOST_KEY_CHANGED,
-                    count=len(changed),
-                    message="Changed SSH host keys were blocked.",
-                )
 
             approved_unknown: list[HostKeyCheck] = []
             if unknown and callbacks.request_host_key_approval(unknown):
@@ -310,52 +475,69 @@ class CollectorBackupService:
                 approved_unknown = unknown
             elif unknown:
                 cancelled = callbacks.cancel_event.is_set()
-                blocked_results.extend(
-                    self._failed_host_key_results(
-                        unknown,
-                        code=ErrorCode.CANCELLED if cancelled else ErrorCode.HOST_KEY_REJECTED,
-                        message=(
-                            "호스트 키 확인 중 사용자가 실행을 취소했습니다."
-                            if cancelled
-                            else "사용자가 SSH 호스트 키 승인을 취소했습니다."
-                        ),
-                        status=DeviceStatus.CANCELLED if cancelled else DeviceStatus.FAILED,
+                unknown_results = self._failed_host_key_results(
+                    unknown,
+                    code=ErrorCode.CANCELLED if cancelled else ErrorCode.HOST_KEY_REJECTED,
+                    message=(
+                        "호스트 키 확인 중 사용자가 실행을 취소했습니다."
+                        if cancelled
+                        else "사용자가 SSH 호스트 키 승인을 취소했습니다."
+                    ),
+                    status=DeviceStatus.CANCELLED if cancelled else DeviceStatus.FAILED,
+                )
+                for result in unknown_results:
+                    by_endpoint[result.target.endpoint] = result
+                    emit_host_key_event(
+                        result.target,
+                        result.status.value,
+                        result.host_key_attempts,
+                        error_code=result.error_code,
+                        message=result.error_message,
+                        final=True,
                     )
-                )
-                logger.log(
-                    stage="host_key_verification",
-                    status="cancelled" if cancelled else "failed",
-                    error_code=(ErrorCode.CANCELLED if cancelled else ErrorCode.HOST_KEY_REJECTED),
-                    count=len(unknown),
-                    message="SSH host key approval did not complete.",
-                )
 
-            eligible_targets = [check.target for check in (*trusted, *approved_unknown)]
-
-            def forward_event(event: object) -> None:
-                callbacks.on_event(event)
-                logger.log(
-                    stage=_first_value(event, "stage", default="collection"),
-                    attempt=_first_value(event, "attempt", default=0),
-                    error_code=_first_value(event, "error_code", default=None),
-                    message=_first_value(event, "message", default=""),
-                )
-
-            collected_results = (
-                self.collector.collect_many(
-                    eligible_targets,
+            approved_endpoints = {check.target.endpoint for check in approved_unknown}
+            eligible_checks = [
+                check
+                for check in checks
+                if check.state is HostKeyTrustState.TRUSTED
+                or check.target.endpoint in approved_endpoints
+            ]
+            if eligible_checks:
+                collected_results = self.collector.collect_many(
+                    [check.target for check in eligible_checks],
                     credentials,
                     options,
                     cancel_event=callbacks.cancel_event,
-                    on_event=forward_event,
+                    on_event=lambda event: forward_event(event, phase="backup"),
                 )
-                if eligible_targets
-                else []
-            )
-            by_endpoint = {
-                result.target.endpoint: result for result in (*blocked_results, *collected_results)
-            }
-            results = [by_endpoint[target.endpoint] for target in targets]
+                checks_by_endpoint = {check.target.endpoint: check for check in eligible_checks}
+                for result in collected_results:
+                    result.host_key_attempts = checks_by_endpoint[result.target.endpoint].attempts
+                    by_endpoint[result.target.endpoint] = result
+
+            pending = [check.target for check in retryable]
+            pending_errors = {check.target.endpoint: check.error_code for check in retryable}
+            if pending:
+                retry_due_at = round_finished_at + options.retry_delays_seconds[attempt - 1]
+            attempt += 1
+
+        unresolved = [target for target in targets if target.endpoint not in by_endpoint]
+        if unresolved:
+            for result in self._cancelled_results(
+                unresolved,
+                host_key_attempts=host_key_attempts,
+            ):
+                by_endpoint[result.target.endpoint] = result
+                emit_host_key_event(
+                    result.target,
+                    CollectionStage.CANCELLED,
+                    result.host_key_attempts,
+                    error_code=ErrorCode.CANCELLED,
+                    message=result.error_message,
+                    final=True,
+                )
+        results = [by_endpoint[target.endpoint] for target in targets]
 
         records = self._save_results(run_directory, results)
         finished_at = datetime.now().astimezone()
@@ -563,7 +745,28 @@ class TrustedKeysDialog(QDialog):
 class MainWindow(QMainWindow):
     """Single-window, repeatable operations UI."""
 
-    RESULT_COLUMNS = ("IP", "호스트명", "모델/SKU", "상태", "시도", "오류")
+    RESULT_COLUMNS = ("IP", "호스트명", "모델/SKU", "상태", "접속 시도", "오류")
+    STATUS_LABELS: ClassVar[dict[str, str]] = {
+        "queued": "대기",
+        "host_key_checking": "호스트 키 확인",
+        "connecting": "접속 중",
+        "enabling": "Enable 진입",
+        "disabling_paging": "페이지 출력 해제",
+        "setting_terminal_width": "터미널 너비 설정",
+        "reading_version": "버전 확인",
+        "reading_modules": "모듈 확인",
+        "validating_model": "모델 확인",
+        "reading_config": "설정 수집",
+        "verifying_prompt": "프롬프트 확인",
+        "retrying": "재시도 대기",
+        "retry_wait": "재시도 대기",
+        "retry_queued": "재시도 예정",
+        "completed": "성공",
+        "success": "성공",
+        "failed": "실패",
+        "retry_exhausted": "재시도 소진",
+        "cancelled": "취소",
+    }
 
     def __init__(
         self,
@@ -578,7 +781,10 @@ class MainWindow(QMainWindow):
         self._cancel_event: threading.Event | None = None
         self._result_directory: Path | None = None
         self._row_by_target: dict[str, int] = {}
+        self._host_key_attempts: dict[str, int] = {}
+        self._backup_attempts: dict[str, int] = {}
         self._completed_targets: set[str] = set()
+        self._retry_exhausted_targets: tuple[str, ...] = ()
         self._target_count = 0
         self._pending_error: str | None = None
         self._closing_after_cancel = False
@@ -672,11 +878,15 @@ class MainWindow(QMainWindow):
         self.cancel_button = QPushButton("취소", central)
         self.cancel_button.setObjectName("cancelButton")
         self.cancel_button.clicked.connect(self._cancel_backup)
+        self.retry_exhausted_button = QPushButton("접속 실패 장비만 다시 시도", central)
+        self.retry_exhausted_button.setObjectName("retryExhaustedButton")
+        self.retry_exhausted_button.clicked.connect(self._retry_exhausted_devices)
         self.open_result_button = QPushButton("결과 폴더 열기", central)
         self.open_result_button.setObjectName("openResultButton")
         self.open_result_button.clicked.connect(self._open_result_directory)
         action_layout.addWidget(self.start_button)
         action_layout.addWidget(self.cancel_button)
+        action_layout.addWidget(self.retry_exhausted_button)
         action_layout.addStretch(1)
         action_layout.addWidget(self.open_result_button)
         outer.addLayout(action_layout)
@@ -728,8 +938,12 @@ class MainWindow(QMainWindow):
             raise ValueError("\n".join(errors))
         return tuple(targets)
 
-    def build_request(self) -> BackupRequest:
-        targets = self.parse_targets(self.ip_input.toPlainText())
+    def build_request(self, *, targets_override: tuple[str, ...] | None = None) -> BackupRequest:
+        targets = (
+            targets_override
+            if targets_override is not None
+            else self.parse_targets(self.ip_input.toPlainText())
+        )
         username = self.username_input.text().strip()
         password = self.password_input.text()
         output_text = self.output_input.text().strip()
@@ -761,6 +975,15 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _start_backup(self) -> None:
+        self._launch_backup()
+
+    @Slot()
+    def _retry_exhausted_devices(self) -> None:
+        if not self._retry_exhausted_targets:
+            return
+        self._launch_backup(targets_override=self._retry_exhausted_targets)
+
+    def _launch_backup(self, *, targets_override: tuple[str, ...] | None = None) -> None:
         if self._thread is not None:
             return
         if self._service is None:
@@ -770,13 +993,18 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "시작할 수 없음", "백업 서비스를 초기화하지 못했습니다.")
                 return
         try:
-            request = self.build_request()
+            request = self.build_request(targets_override=targets_override)
         except ValueError as exc:
             QMessageBox.warning(self, "입력 확인", str(exc))
             return
 
+        # A new run always replaces the previous retry candidate set. The new
+        # outcome repopulates it only with endpoints that exhaust this run.
+        self._retry_exhausted_targets = ()
         self._target_count = len(request.targets)
         self._row_by_target.clear()
+        self._host_key_attempts.clear()
+        self._backup_attempts.clear()
         self._completed_targets.clear()
         self.result_table.setRowCount(0)
         self.progress_bar.setValue(0)
@@ -856,18 +1084,63 @@ class MainWindow(QMainWindow):
             self.result_table.setItem(row, column, item)
         item.setText("" if value is None else str(value))
 
+    def _set_status_cell(self, row: int, raw_status: object) -> None:
+        status = str(raw_status).lower()
+        item = self.result_table.item(row, 3)
+        if item is None:
+            item = QTableWidgetItem("")
+            self.result_table.setItem(row, 3, item)
+        item.setText(self.STATUS_LABELS.get(status, str(raw_status)))
+        item.setData(Qt.ItemDataRole.UserRole, status)
+        if status in {"retry_wait", "retrying", "retry_queued"}:
+            item.setForeground(QBrush(QColor("#9A6700")))
+        elif status == "retry_exhausted":
+            item.setForeground(QBrush(QColor("#B42318")))
+        else:
+            item.setForeground(QBrush())
+
+    def _set_attempt_cell(self, row: int, target: str) -> None:
+        host_attempts = self._host_key_attempts.get(target, 0)
+        backup_attempts = self._backup_attempts.get(target, 0)
+        self._set_cell(row, 4, f"키 {host_attempts}/4 · 백업 {backup_attempts}/4")
+
     @Slot(object)
     def _on_collection_event(self, event: object) -> None:
         target = str(_first_value(event, "target.ip", "ip", default="알 수 없음"))
         stage = str(_first_value(event, "stage", default="running"))
-        attempt = _first_value(event, "attempt", default="")
+        stage_key = stage.lower()
+        phase = str(_first_value(event, "phase", default="backup"))
+        attempt_value = _first_value(event, "attempt", default=0)
+        try:
+            attempt = max(0, int(attempt_value))
+        except TypeError, ValueError:
+            attempt = 0
         message = _first_value(event, "message", default="")
         error_code = _first_value(event, "error_code", default="")
         row = self._row_for_target(target)
-        self._set_cell(row, 3, stage)
-        self._set_cell(row, 4, attempt)
+        is_wait_stage = stage_key in {"retry_wait", "retrying", "retry_queued"}
+        if not is_wait_stage:
+            if phase == "host_key":
+                self._host_key_attempts[target] = max(
+                    attempt,
+                    self._host_key_attempts.get(target, 0),
+                )
+            else:
+                self._backup_attempts[target] = max(
+                    attempt,
+                    self._backup_attempts.get(target, 0),
+                )
+        self._set_status_cell(row, stage_key)
+        self._set_attempt_cell(row, target)
         self._set_cell(row, 5, error_code or message)
-        if stage.lower() in {"completed", "success", "failed", "cancelled"}:
+        final = bool(_first_value(event, "final", default=False))
+        if final or stage_key in {
+            "completed",
+            "success",
+            "failed",
+            "retry_exhausted",
+            "cancelled",
+        }:
             self._completed_targets.add(target)
         completed = len(self._completed_targets)
         if self._target_count:
@@ -878,6 +1151,10 @@ class MainWindow(QMainWindow):
     def _on_worker_success(self, outcome: object) -> None:
         self._result_directory = Path(str(_first_value(outcome, "run_directory")))
         results = cast(Iterable[object], _first_value(outcome, "results", default=()))
+        exhausted_targets: list[str] = []
+        success_count = 0
+        exhausted_count = 0
+        other_failure_count = 0
         for result in results:
             target = str(_first_value(result, "target.ip", "ip_address", "ip"))
             row = self._row_for_target(target)
@@ -885,15 +1162,37 @@ class MainWindow(QMainWindow):
             sku = _first_value(result, "sku", default="")
             self._set_cell(row, 1, _first_value(result, "hostname"))
             self._set_cell(row, 2, " / ".join(part for part in (str(model), str(sku)) if part))
-            self._set_cell(row, 3, _first_value(result, "status"))
-            self._set_cell(row, 4, _first_value(result, "attempts", default=0))
+            status = str(_first_value(result, "status")).lower()
+            host_key_attempts = _first_value(result, "host_key_attempts", default=0)
+            backup_attempts = _first_value(result, "attempts", default=0)
+            try:
+                self._host_key_attempts[target] = int(host_key_attempts)
+            except TypeError, ValueError:
+                self._host_key_attempts[target] = 0
+            try:
+                self._backup_attempts[target] = int(backup_attempts)
+            except TypeError, ValueError:
+                self._backup_attempts[target] = 0
+            self._set_status_cell(row, status)
+            self._set_attempt_cell(row, target)
             error = _first_value(result, "error_code", default="")
             message = _first_value(result, "error_message", default="")
             self._set_cell(row, 5, " - ".join(part for part in (str(error), str(message)) if part))
+            self._completed_targets.add(target)
+            if status == DeviceStatus.SUCCESS.value:
+                success_count += 1
+            elif status == DeviceStatus.RETRY_EXHAUSTED.value:
+                exhausted_count += 1
+                exhausted_targets.append(target)
+            else:
+                other_failure_count += 1
+        self._retry_exhausted_targets = tuple(exhausted_targets)
         self.progress_bar.setValue(100)
         cancelled = bool(_first_value(outcome, "cancelled", default=False))
+        prefix = "취소된 실행 결과 저장" if cancelled else "백업 완료"
         self.status_label.setText(
-            "취소된 실행의 결과를 저장했습니다." if cancelled else "백업이 완료되었습니다."
+            f"{prefix}: 성공 {success_count}대 · 재시도 소진 {exhausted_count}대 · "
+            f"기타 실패 {other_failure_count}대"
         )
 
     @Slot(str)
@@ -980,6 +1279,7 @@ class MainWindow(QMainWindow):
             widget.setEnabled(not running)
         self.start_button.setEnabled(not running)
         self.cancel_button.setEnabled(running)
+        self.retry_exhausted_button.setEnabled(not running and bool(self._retry_exhausted_targets))
         self.open_result_button.setEnabled(not running and self._result_directory is not None)
 
     @Slot()
@@ -1025,6 +1325,7 @@ class MainWindow(QMainWindow):
         self.username_input.clear()
         self.password_input.clear()
         self.enable_password_input.clear()
+        self._retry_exhausted_targets = ()
         super().closeEvent(event)
 
 

@@ -22,7 +22,9 @@ DEVICE_HEADERS = (
     "Hostname",
     "Model/SKU",
     "Status",
-    "Attempts",
+    "Host Key Attempts",
+    "Backup Attempts",
+    "Total Connection Attempts",
     "Started At",
     "Finished At",
     "Duration Seconds",
@@ -38,10 +40,13 @@ _CONTROL_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _LOG_ALLOWED_FIELDS = {
     "timestamp",
     "level",
+    "phase",
     "stage",
     "status",
     "error_code",
+    "round",
     "attempt",
+    "delay_seconds",
     "elapsed_ms",
     "duration_ms",
     "retryable",
@@ -143,12 +148,20 @@ def _model_sku(result: object) -> str:
 
 
 def _device_row(result: object) -> tuple[Any, ...]:
+    host_key_attempts = _first(result, "host_key_attempts", default=0)
+    backup_attempts = _first(result, "attempts", "attempt_count", default=0)
+    try:
+        total_attempts: int | str = int(host_key_attempts) + int(backup_attempts)
+    except TypeError, ValueError:
+        total_attempts = ""
     return (
         _first(result, "ip_address", "ip", "target.ip_address", "target.ip"),
         _first(result, "hostname", "device_hostname"),
         _model_sku(result),
         _first(result, "status"),
-        _first(result, "attempts", "attempt_count", default=0),
+        host_key_attempts,
+        backup_attempts,
+        total_attempts,
         _first(result, "started_at"),
         _first(result, "finished_at"),
         _duration_seconds(result),
@@ -197,8 +210,9 @@ def write_result_workbook(
 
     statuses = [_status_text(result) for result in result_list]
     successes = sum(status in {"SUCCESS", "SUCCEEDED", "COMPLETED"} for status in statuses)
+    retry_exhausted = sum(status == "RETRY_EXHAUSTED" for status in statuses)
     cancellations = sum(status == "CANCELLED" for status in statuses)
-    failures = len(result_list) - successes - cancellations
+    failures = len(result_list) - successes - retry_exhausted - cancellations
     duration: float | str = ""
     if report_summary.started_at and report_summary.finished_at:
         duration = round(
@@ -217,6 +231,7 @@ def write_result_workbook(
         ("Total Devices", len(result_list)),
         ("Successful", successes),
         ("Failed", failures),
+        ("Retry Exhausted", retry_exhausted),
         ("Cancelled", cancellations),
         ("Run Cancelled", report_summary.cancelled),
         ("Result Directory", str(report_path.parent)),
@@ -231,11 +246,11 @@ def write_result_workbook(
         devices_sheet.append(tuple(neutralize_excel_text(value) for value in _device_row(result)))
     _style_sheet(
         devices_sheet,
-        widths=(16, 24, 30, 16, 10, 21, 21, 18, 48, 66, 26, 54),
+        widths=(16, 24, 30, 18, 18, 18, 24, 21, 21, 18, 48, 66, 26, 54),
     )
     for row in devices_sheet.iter_rows(min_row=2):
-        row[5].number_format = "yyyy-mm-dd hh:mm:ss"
-        row[6].number_format = "yyyy-mm-dd hh:mm:ss"
+        row[7].number_format = "yyyy-mm-dd hh:mm:ss"
+        row[8].number_format = "yyyy-mm-dd hh:mm:ss"
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 

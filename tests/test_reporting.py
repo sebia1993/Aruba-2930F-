@@ -22,6 +22,7 @@ def test_result_workbook_has_expected_sheets_fields_and_formula_protection(tmp_p
         "model": "Aruba 2930F",
         "sku": "JL253A",
         "status": "success",
+        "host_key_attempts": 1,
         "attempts": 1,
         "started_at": started,
         "finished_at": started + timedelta(seconds=2),
@@ -48,7 +49,9 @@ def test_result_workbook_has_expected_sheets_fields_and_formula_protection(tmp_p
         "Hostname",
         "Model/SKU",
         "Status",
-        "Attempts",
+        "Host Key Attempts",
+        "Backup Attempts",
+        "Total Connection Attempts",
         "Started At",
         "Finished At",
         "Duration Seconds",
@@ -59,8 +62,11 @@ def test_result_workbook_has_expected_sheets_fields_and_formula_protection(tmp_p
     ]
     assert devices["A2"].value == "192.0.2.10"
     assert devices["B2"].value.startswith("'=")
-    assert devices["L2"].value.startswith("'+")
+    assert devices["N2"].value.startswith("'+")
     assert devices["D2"].value == "success"
+    assert devices["E2"].value == 1
+    assert devices["F2"].value == 1
+    assert devices["G2"].value == 2
     assert workbook["Summary"]["B5"].value == 1
     assert not (tmp_path / "result.xlsx.part").exists()
     workbook.close()
@@ -109,3 +115,58 @@ def test_sanitize_log_event_does_not_serialize_arbitrary_object_fields() -> None
     assert record["attempt"] == 1
     assert "config_text" not in record
     assert "target" not in record
+
+
+def test_retry_exhausted_is_counted_separately(tmp_path: Path) -> None:
+    report_path = write_result_workbook(
+        tmp_path,
+        [
+            {
+                "target": {"ip": "192.0.2.10"},
+                "status": "retry_exhausted",
+                "host_key_attempts": 4,
+                "attempts": 0,
+            },
+            {"target": {"ip": "192.0.2.11"}, "status": "failed"},
+        ],
+    )
+
+    workbook = load_workbook(report_path, data_only=True)
+    summary = {
+        workbook["Summary"].cell(row=row, column=1).value: workbook["Summary"]
+        .cell(row=row, column=2)
+        .value
+        for row in range(2, workbook["Summary"].max_row + 1)
+    }
+    assert summary["Total Devices"] == 2
+    assert summary["Successful"] == 0
+    assert summary["Failed"] == 1
+    assert summary["Retry Exhausted"] == 1
+    assert summary["Cancelled"] == 0
+    workbook.close()
+
+
+def test_jsonl_logger_preserves_retry_round_and_delay_but_not_target(tmp_path: Path) -> None:
+    path = tmp_path / "operation.jsonl"
+    logger = SanitizedJsonlLogger(path, sensitive_values=("192.0.2.10",))
+
+    logger.log(
+        phase="host_key",
+        stage="retry_wait",
+        round=2,
+        attempt=1,
+        delay_seconds=5.0,
+        error_code="TCP_TIMEOUT",
+        message="waiting for 192.0.2.10",
+        target={"ip": "192.0.2.10"},
+    )
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["stage"] == "retry_wait"
+    assert record["phase"] == "host_key"
+    assert record["round"] == 2
+    assert record["attempt"] == 1
+    assert record["delay_seconds"] == 5.0
+    assert record["error_code"] == "TCP_TIMEOUT"
+    assert "target" not in record
+    assert "192.0.2.10" not in json.dumps(record)

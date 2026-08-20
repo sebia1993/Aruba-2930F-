@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import time
 from collections.abc import Callable, Iterable
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from math import isfinite
 
 from .hostkeys import HostKeyProbe, HostKeyStore, ParamikoHostKeyProbe
 from .models import (
@@ -44,6 +46,25 @@ class _CancellationView:
     def is_set(self) -> bool:
         return self.internal.is_set() or bool(self.external and self.external.is_set())
 
+    def wait(self, delay_seconds: float) -> bool:
+        """Return ``True`` when cancelled, including during a retry delay."""
+
+        if self.is_set():
+            return True
+        deadline = time.monotonic() + delay_seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self.is_set()
+            if self.internal.wait(min(remaining, 0.05)) or self.is_set():
+                return True
+
+
+@dataclass(frozen=True, slots=True)
+class _AttemptOutcome:
+    result: DeviceResult
+    retryable: bool = False
+
 
 class ArubaCollector:
     """Coordinates host-key review and bounded, read-only device collection."""
@@ -76,39 +97,176 @@ class ArubaCollector:
         *,
         options: CollectionOptions | None = None,
         cancel_event: threading.Event | None = None,
+        on_event: EventCallback | None = None,
     ) -> list[HostKeyCheck]:
-        """Probe before credentials are used, returning reviewable trust states."""
+        """Probe host keys in deferred rounds and preserve input order."""
 
         resolved_options = options or CollectionOptions()
-        checks: list[HostKeyCheck] = []
-        for target in targets:
-            for attempt in range(1, resolved_options.max_attempts + 1):
-                if self._is_cancelled(cancel_event):
-                    raise CollectionFailure(ErrorCode.CANCELLED, "Host-key review was cancelled.")
-                try:
-                    observation = self.host_key_probe.probe(
-                        target,
-                        timeout=resolved_options.connect_timeout_seconds,
-                    )
-                except CollectionFailure as exc:
-                    if exc.code is ErrorCode.CANCELLED:
-                        raise
-                    if exc.transient and attempt < resolved_options.max_attempts:
-                        continue
-                    checks.append(
-                        HostKeyCheck(
-                            observation=HostKeyObservation(target, "", ""),
-                            state=HostKeyTrustState.REJECTED,
-                            message=exc.safe_message,
-                            error_code=exc.code,
-                            attempts=attempt,
-                        )
-                    )
-                    break
+        ordered_targets = tuple(targets)
+        final_checks: list[HostKeyCheck | None] = [None] * len(ordered_targets)
+        pending_indices = list(range(len(ordered_targets)))
+        last_checks: dict[int, HostKeyCheck] = {}
+
+        for attempt in range(1, resolved_options.max_attempts + 1):
+            if not pending_indices:
+                break
+            if self._is_cancelled(cancel_event):
+                raise CollectionFailure(ErrorCode.CANCELLED, "Host-key review was cancelled.")
+            round_checks = self.probe_host_keys_round(
+                (ordered_targets[index] for index in pending_indices),
+                attempt=attempt,
+                options=resolved_options,
+                cancel_event=cancel_event,
+                on_event=on_event,
+            )
+            next_pending: list[int] = []
+            for index, check in zip(pending_indices, round_checks, strict=True):
+                last_checks[index] = check
+                if check.retryable and not check.retry_exhausted:
+                    next_pending.append(index)
                 else:
-                    checks.append(replace(self.host_key_store.check(observation), attempts=attempt))
-                    break
-        return checks
+                    final_checks[index] = check
+            if not next_pending:
+                pending_indices = []
+                break
+
+            delay_seconds = resolved_options.retry_delays_seconds[attempt - 1]
+            for index in next_pending:
+                previous = last_checks[index]
+                _emit(
+                    on_event,
+                    CollectionEvent(
+                        target=ordered_targets[index],
+                        stage=CollectionStage.RETRY_WAIT,
+                        attempt=attempt + 1,
+                        message="Waiting before the next host-key retry round.",
+                        error_code=previous.error_code,
+                        round=attempt + 1,
+                        delay_seconds=delay_seconds,
+                    ),
+                )
+            if not self.wait_for_retry_delay(delay_seconds, cancel_event=cancel_event):
+                raise CollectionFailure(ErrorCode.CANCELLED, "Host-key review was cancelled.")
+            pending_indices = next_pending
+
+        for index, final_check in enumerate(final_checks):
+            if final_check is None:
+                final_checks[index] = last_checks[index]
+        return [final_check for final_check in final_checks if final_check is not None]
+
+    def probe_host_keys_round(
+        self,
+        targets: Iterable[DeviceTarget],
+        *,
+        attempt: int,
+        options: CollectionOptions | None = None,
+        cancel_event: threading.Event | None = None,
+        on_event: EventCallback | None = None,
+    ) -> list[HostKeyCheck]:
+        """Probe every supplied target exactly once and preserve input order."""
+
+        resolved_options = options or CollectionOptions()
+        if not 1 <= attempt <= resolved_options.max_attempts:
+            raise ValueError("Attempt must be within the configured attempt limit.")
+        ordered_targets = tuple(targets)
+        if not ordered_targets:
+            return []
+        if self._is_cancelled(cancel_event):
+            raise CollectionFailure(ErrorCode.CANCELLED, "Host-key review was cancelled.")
+
+        cancellation = _CancellationView(self._cancel_event, cancel_event)
+        with ThreadPoolExecutor(
+            max_workers=min(resolved_options.concurrency, len(ordered_targets)),
+            thread_name_prefix="aruba2930f-hostkey",
+        ) as executor:
+            futures: list[Future[HostKeyCheck]] = [
+                executor.submit(
+                    self._probe_host_key_once,
+                    target,
+                    attempt,
+                    resolved_options,
+                    cancellation,
+                    on_event,
+                )
+                for target in ordered_targets
+            ]
+            return [future.result() for future in futures]
+
+    def wait_for_retry_delay(
+        self,
+        delay_seconds: float,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        """Wait cooperatively; return ``False`` as soon as cancellation is seen."""
+
+        if not isinstance(delay_seconds, (int, float)) or not isfinite(delay_seconds):
+            raise ValueError("Retry delay must be a finite number.")
+        if delay_seconds < 0:
+            raise ValueError("Retry delay cannot be negative.")
+        cancellation = _CancellationView(self._cancel_event, cancel_event)
+        return not cancellation.wait(float(delay_seconds))
+
+    def _probe_host_key_once(
+        self,
+        target: DeviceTarget,
+        attempt: int,
+        options: CollectionOptions,
+        cancellation: _CancellationView,
+        on_event: EventCallback | None,
+    ) -> HostKeyCheck:
+        _raise_if_cancelled(cancellation, message="Host-key review was cancelled.")
+        _stage(on_event, target, CollectionStage.HOST_KEY_CHECKING, attempt)
+        try:
+            observation = self.host_key_probe.probe(
+                target,
+                timeout=options.connect_timeout_seconds,
+            )
+            _raise_if_cancelled(cancellation, message="Host-key review was cancelled.")
+            checked = self.host_key_store.check(observation)
+        except CollectionFailure as exc:
+            if exc.code is ErrorCode.CANCELLED or cancellation.is_set():
+                raise CollectionFailure(
+                    ErrorCode.CANCELLED, "Host-key review was cancelled."
+                ) from exc
+            return _host_key_failure(target, attempt, options, exc, on_event)
+        except Exception:
+            return _host_key_failure(
+                target,
+                attempt,
+                options,
+                CollectionFailure(
+                    ErrorCode.UNEXPECTED_ERROR,
+                    "An unexpected internal error stopped host-key review.",
+                ),
+                on_event,
+            )
+
+        error_code = (
+            ErrorCode.HOST_KEY_CHANGED
+            if checked.state is HostKeyTrustState.CHANGED
+            else checked.error_code
+        )
+        result = replace(
+            checked,
+            error_code=error_code,
+            attempts=attempt,
+            retryable=False,
+            retry_exhausted=False,
+        )
+        if result.state is HostKeyTrustState.CHANGED:
+            _emit(
+                on_event,
+                CollectionEvent(
+                    target=target,
+                    stage=CollectionStage.FAILED,
+                    attempt=attempt,
+                    message=result.message,
+                    error_code=ErrorCode.HOST_KEY_CHANGED,
+                    round=attempt,
+                ),
+            )
+        return result
 
     def approve_host_keys(self, checks: Iterable[HostKeyCheck]) -> None:
         self.host_key_store.approve(checks)
@@ -120,7 +278,8 @@ class ArubaCollector:
         with self._active_lock:
             sessions = tuple(self._active_sessions.values())
         for session in sessions:
-            session.close()
+            with suppress(Exception):
+                session.close()
 
     def collect_many(
         self,
@@ -131,69 +290,100 @@ class ArubaCollector:
         cancel_event: threading.Event | None = None,
         on_event: EventCallback | None = None,
     ) -> list[DeviceResult]:
-        """Collect with at most ``concurrency`` active jobs and preserve input order."""
+        """Collect one attempt per pending target in each deferred retry round."""
 
         resolved_options = options or CollectionOptions()
         ordered_targets = tuple(targets)
         if not ordered_targets:
             return []
 
+        started_at = [datetime.now(UTC) for _target in ordered_targets]
         results: list[DeviceResult | None] = [None] * len(ordered_targets)
-        next_index = 0
-        futures: dict[Future[DeviceResult], int] = {}
+        pending_indices = list(range(len(ordered_targets)))
+        previous_failures: dict[int, DeviceResult] = {}
+        cancellation = _CancellationView(self._cancel_event, cancel_event)
+        for target in ordered_targets:
+            _emit(on_event, CollectionEvent(target, CollectionStage.QUEUED, 0, round=0))
 
         with ThreadPoolExecutor(
             max_workers=min(resolved_options.concurrency, len(ordered_targets)),
             thread_name_prefix="aruba2930f",
         ) as executor:
-            while next_index < len(ordered_targets) and len(futures) < resolved_options.concurrency:
-                if self._is_cancelled(cancel_event):
+            for attempt in range(1, resolved_options.max_attempts + 1):
+                if not pending_indices:
                     break
-                futures[
-                    executor.submit(
-                        self.collect_one,
-                        ordered_targets[next_index],
-                        credentials,
-                        options=resolved_options,
-                        cancel_event=cancel_event,
+                if cancellation.is_set():
+                    self._cancel_pending_results(
+                        pending_indices,
+                        ordered_targets,
+                        results,
+                        attempts=attempt - 1,
+                        started_at=started_at,
                         on_event=on_event,
                     )
-                ] = next_index
-                next_index += 1
+                    pending_indices = []
+                    break
 
-            while futures:
-                done, _ = wait(tuple(futures), return_when=FIRST_COMPLETED)
-                for future in done:
-                    index = futures.pop(future)
-                    results[index] = future.result()
-
-                if self._is_cancelled(cancel_event):
-                    self.cancel()
-                    continue
-                while (
-                    next_index < len(ordered_targets)
-                    and len(futures) < resolved_options.concurrency
-                ):
-                    futures[
-                        executor.submit(
-                            self.collect_one,
-                            ordered_targets[next_index],
-                            credentials,
-                            options=resolved_options,
-                            cancel_event=cancel_event,
+                if attempt > 1:
+                    delay_seconds = resolved_options.retry_delays_seconds[attempt - 2]
+                    for index in pending_indices:
+                        previous = previous_failures[index]
+                        _emit(
+                            on_event,
+                            CollectionEvent(
+                                target=ordered_targets[index],
+                                stage=CollectionStage.RETRY_WAIT,
+                                attempt=attempt,
+                                message="Waiting before the next backup retry round.",
+                                error_code=previous.error_code,
+                                round=attempt,
+                                delay_seconds=delay_seconds,
+                            ),
+                        )
+                    if cancellation.wait(delay_seconds):
+                        self._cancel_pending_results(
+                            pending_indices,
+                            ordered_targets,
+                            results,
+                            attempts=attempt - 1,
+                            started_at=started_at,
                             on_event=on_event,
                         )
-                    ] = next_index
-                    next_index += 1
+                        pending_indices = []
+                        break
+
+                futures: dict[int, Future[_AttemptOutcome]] = {
+                    index: executor.submit(
+                        self._collect_attempt,
+                        ordered_targets[index],
+                        credentials,
+                        resolved_options,
+                        attempt,
+                        started_at[index],
+                        cancellation,
+                        on_event,
+                    )
+                    for index in pending_indices
+                }
+                next_pending: list[int] = []
+                for index in pending_indices:
+                    outcome = futures[index].result()
+                    if outcome.retryable:
+                        previous_failures[index] = outcome.result
+                        next_pending.append(index)
+                    else:
+                        results[index] = outcome.result
+                pending_indices = next_pending
 
         for index, target in enumerate(ordered_targets):
             if results[index] is None:
-                results[index] = _cancelled_result(target, attempts=0)
-                _emit(
+                results[index] = _failed_result(
+                    target,
+                    resolved_options.max_attempts,
+                    started_at[index],
+                    ErrorCode.UNEXPECTED_ERROR,
+                    "Collection ended without a result.",
                     on_event,
-                    CollectionEvent(
-                        target, CollectionStage.CANCELLED, 0, "Collection was cancelled."
-                    ),
                 )
         return [result for result in results if result is not None]
 
@@ -206,21 +396,42 @@ class ArubaCollector:
         cancel_event: threading.Event | None = None,
         on_event: EventCallback | None = None,
     ) -> DeviceResult:
-        resolved_options = options or CollectionOptions()
-        started_at = datetime.now(UTC)
-        cancellation = _CancellationView(self._cancel_event, cancel_event)
+        """Collect one endpoint using the same deferred retry campaign."""
 
-        for attempt in range(1, resolved_options.max_attempts + 1):
+        return self.collect_many(
+            [target],
+            credentials,
+            options,
+            cancel_event=cancel_event,
+            on_event=on_event,
+        )[0]
+
+    def _collect_attempt(
+        self,
+        target: DeviceTarget,
+        credentials: Credentials,
+        resolved_options: CollectionOptions,
+        attempt_number: int,
+        started_at: datetime,
+        cancellation: _CancellationView,
+        on_event: EventCallback | None,
+    ) -> _AttemptOutcome:
+
+        for attempt in (attempt_number,):
             attempt_warnings: list[str] = []
             if cancellation.is_set():
                 result = _cancelled_result(target, attempts=attempt - 1, started_at=started_at)
                 _emit(
                     on_event,
                     CollectionEvent(
-                        target, CollectionStage.CANCELLED, attempt, result.error_message
+                        target,
+                        CollectionStage.CANCELLED,
+                        attempt,
+                        result.error_message,
+                        round=attempt,
                     ),
                 )
-                return result
+                return _AttemptOutcome(result)
 
             session: SSHSession | None = None
             try:
@@ -278,6 +489,7 @@ class ArubaCollector:
 
                 _stage(on_event, target, CollectionStage.VERIFYING_PROMPT, attempt)
                 hostname = require_valid_prompt(session.get_prompt())
+                _raise_if_cancelled(cancellation)
                 identity = replace(identity, hostname=hostname)
                 config_text = normalize_config_text(config_output)
                 config_sha256 = hashlib.sha256(config_text.encode("utf-8")).hexdigest()
@@ -300,10 +512,14 @@ class ArubaCollector:
                 _emit(
                     on_event,
                     CollectionEvent(
-                        target, CollectionStage.COMPLETED, attempt, "Collection completed."
+                        target,
+                        CollectionStage.COMPLETED,
+                        attempt,
+                        "Collection completed.",
+                        round=attempt,
                     ),
                 )
-                return result
+                return _AttemptOutcome(result)
             except CollectionFailure as exc:
                 if exc.code is ErrorCode.CANCELLED or cancellation.is_set():
                     result = _cancelled_result(target, attempts=attempt, started_at=started_at)
@@ -315,52 +531,105 @@ class ArubaCollector:
                             attempt,
                             result.error_message,
                             ErrorCode.CANCELLED,
+                            round=attempt,
                         ),
                     )
-                    return result
+                    return _AttemptOutcome(result)
                 if exc.transient and attempt < resolved_options.max_attempts:
+                    result = _failed_result(
+                        target,
+                        attempt,
+                        started_at,
+                        exc.code,
+                        exc.safe_message,
+                        None,
+                    )
                     _emit(
                         on_event,
                         CollectionEvent(
                             target,
-                            CollectionStage.RETRYING,
+                            CollectionStage.RETRY_QUEUED,
                             attempt,
-                            "A transient failure occurred; reconnecting.",
+                            "A transient failure was queued for the next retry round.",
                             exc.code,
+                            round=attempt,
                         ),
                     )
-                    continue
-                return _failed_result(
-                    target,
-                    attempt,
-                    started_at,
-                    exc.code,
-                    exc.safe_message,
-                    on_event,
+                    return _AttemptOutcome(result, retryable=True)
+                status = DeviceStatus.RETRY_EXHAUSTED if exc.transient else DeviceStatus.FAILED
+                message = (
+                    "The retry limit was reached. " + exc.safe_message
+                    if status is DeviceStatus.RETRY_EXHAUSTED
+                    else exc.safe_message
+                )
+                return _AttemptOutcome(
+                    _failed_result(
+                        target,
+                        attempt,
+                        started_at,
+                        exc.code,
+                        message,
+                        on_event,
+                        status=status,
+                    )
                 )
             except Exception:
-                return _failed_result(
-                    target,
-                    attempt,
-                    started_at,
-                    ErrorCode.UNEXPECTED_ERROR,
-                    "An unexpected internal error stopped collection.",
-                    on_event,
+                return _AttemptOutcome(
+                    _failed_result(
+                        target,
+                        attempt,
+                        started_at,
+                        ErrorCode.UNEXPECTED_ERROR,
+                        "An unexpected internal error stopped collection.",
+                        on_event,
+                    )
                 )
             finally:
                 if session is not None:
-                    session.close()
+                    with suppress(Exception):
+                        session.close()
                     self._unregister_session(target, session)
 
         # The loop always returns on success/final failure. This is defensive.
-        return _failed_result(
-            target,
-            resolved_options.max_attempts,
-            started_at,
-            ErrorCode.UNEXPECTED_ERROR,
-            "Collection ended without a result.",
-            on_event,
+        return _AttemptOutcome(
+            _failed_result(
+                target,
+                attempt,
+                started_at,
+                ErrorCode.UNEXPECTED_ERROR,
+                "Collection ended without a result.",
+                on_event,
+            )
         )
+
+    def _cancel_pending_results(
+        self,
+        indices: Iterable[int],
+        targets: tuple[DeviceTarget, ...],
+        results: list[DeviceResult | None],
+        *,
+        attempts: int,
+        started_at: list[datetime],
+        on_event: EventCallback | None,
+    ) -> None:
+        for index in indices:
+            result = _cancelled_result(
+                targets[index],
+                attempts=attempts,
+                started_at=started_at[index],
+            )
+            results[index] = result
+            _emit(
+                on_event,
+                CollectionEvent(
+                    targets[index],
+                    CollectionStage.CANCELLED,
+                    attempts,
+                    result.error_message,
+                    ErrorCode.CANCELLED,
+                    round=attempts,
+                ),
+            )
 
     def _register_session(self, target: DeviceTarget, session: SSHSession) -> None:
         with self._active_lock:
@@ -375,18 +644,64 @@ class ArubaCollector:
         return self._cancel_event.is_set() or bool(external and external.is_set())
 
 
+def _host_key_failure(
+    target: DeviceTarget,
+    attempt: int,
+    options: CollectionOptions,
+    failure: CollectionFailure,
+    callback: EventCallback | None,
+) -> HostKeyCheck:
+    retryable = failure.transient
+    retry_exhausted = failure.transient and attempt >= options.max_attempts
+    stage = (
+        CollectionStage.RETRY_QUEUED
+        if retryable and not retry_exhausted
+        else CollectionStage.FAILED
+    )
+    message = (
+        "The host-key retry limit was reached. " + failure.safe_message
+        if retry_exhausted
+        else failure.safe_message
+    )
+    result = HostKeyCheck(
+        observation=HostKeyObservation(target, "", ""),
+        state=HostKeyTrustState.REJECTED,
+        message=message,
+        error_code=failure.code,
+        attempts=attempt,
+        retryable=retryable,
+        retry_exhausted=retry_exhausted,
+    )
+    _emit(
+        callback,
+        CollectionEvent(
+            target=target,
+            stage=stage,
+            attempt=attempt,
+            message=message,
+            error_code=failure.code,
+            round=attempt,
+        ),
+    )
+    return result
+
+
 def _stage(
     callback: EventCallback | None,
     target: DeviceTarget,
     stage: CollectionStage,
     attempt: int,
 ) -> None:
-    _emit(callback, CollectionEvent(target, stage, attempt))
+    _emit(callback, CollectionEvent(target, stage, attempt, round=attempt))
 
 
-def _raise_if_cancelled(cancellation: _CancellationView) -> None:
+def _raise_if_cancelled(
+    cancellation: _CancellationView,
+    *,
+    message: str = "Collection was cancelled.",
+) -> None:
     if cancellation.is_set():
-        raise CollectionFailure(ErrorCode.CANCELLED, "Collection was cancelled.")
+        raise CollectionFailure(ErrorCode.CANCELLED, message)
 
 
 def _emit(callback: EventCallback | None, event: CollectionEvent) -> None:
@@ -424,11 +739,13 @@ def _failed_result(
     error_code: ErrorCode,
     message: str,
     callback: EventCallback | None,
+    *,
+    status: DeviceStatus = DeviceStatus.FAILED,
 ) -> DeviceResult:
     finished = datetime.now(UTC)
     result = DeviceResult(
         target=target,
-        status=DeviceStatus.FAILED,
+        status=status,
         attempts=attempt,
         started_at=started_at,
         finished_at=finished,
@@ -438,6 +755,13 @@ def _failed_result(
     )
     _emit(
         callback,
-        CollectionEvent(target, CollectionStage.FAILED, attempt, message, error_code),
+        CollectionEvent(
+            target,
+            CollectionStage.FAILED,
+            attempt,
+            message,
+            error_code,
+            round=attempt,
+        ),
     )
     return result
