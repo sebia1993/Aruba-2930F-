@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aruba2930f-config-backup"
-version = "0.1.1"
+version = "0.1.2"
 description = "Secure Windows GUI for batch Aruba 2930F running-config backups over SSH"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
@@ -20,6 +20,7 @@ classifiers = [
 ]
 dependencies = [
   "netmiko==4.6.0",
+  "paramiko==4.0.0",
   "openpyxl==3.1.5",
   "PySide6==6.11.0",
 ]

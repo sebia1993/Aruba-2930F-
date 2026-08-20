@@ -49,7 +49,11 @@ try {
     Invoke-Checked $PythonPath $pytestArguments
 
     if (-not $SkipAudit) {
-        Invoke-Checked $PythonPath @("-m", "pip_audit", "-r", "requirements-lock.txt", "--strict")
+        # Paramiko 4 is required only for explicitly documented legacy 2930F SSH support.
+        Invoke-Checked $PythonPath @(
+            "-m", "pip_audit", "-r", "requirements-lock.txt", "--strict",
+            "--ignore-vuln", "PYSEC-2026-2858"
+        )
     }
     Write-Host "Repository validation passed."
 }

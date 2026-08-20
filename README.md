@@ -4,7 +4,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 수집하는 Windows용 GUI 도구입니다. 장비 설정을 변경하지 않으며, 수집 전에
 항상 `no page`를 적용해 수동으로 페이지를 넘기지 않고 한 번에 백업합니다.
 
-> **릴리즈 상태:** v0.1.1은 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
+> **릴리즈 상태:** v0.1.2는 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
 > 로컬 파일 시스템을 사용하며, 실제 Aruba 2930F에서의 동작을 증명하지는
 > 않습니다. 현장 도입 전 별도 검증이 필요합니다.
 
@@ -24,13 +24,13 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 ## 다운로드와 실행
 
 1. GitHub Releases에서
-   `Aruba2930FConfigBackup_v0.1.1_windows_x64.zip`과 같은 이름의
+   `Aruba2930FConfigBackup_v0.1.2_windows_x64.zip`과 같은 이름의
    `.sha256` 파일을 내려받습니다.
 2. PowerShell에서 해시를 확인합니다.
 
    ```powershell
-   Get-FileHash .\Aruba2930FConfigBackup_v0.1.1_windows_x64.zip -Algorithm SHA256
-   Get-Content .\Aruba2930FConfigBackup_v0.1.1_windows_x64.zip.sha256
+   Get-FileHash .\Aruba2930FConfigBackup_v0.1.2_windows_x64.zip -Algorithm SHA256
+   Get-Content .\Aruba2930FConfigBackup_v0.1.2_windows_x64.zip.sha256
    ```
 
 3. ZIP 전체를 쓰기 가능한 로컬 폴더에 압축 해제합니다. ZIP 안의 EXE만
@@ -142,6 +142,7 @@ IP/자격증명을 제거한 짧은 설명만 기록합니다. 결과 TXT에는 
 | `HOST_KEY_REJECTED` | 사용자가 새 호스트 키를 승인하지 않음 |
 | `HOST_KEY_CHANGED` | 저장된 호스트 키와 현재 키가 다름 |
 | `TCP_TIMEOUT` | 장비 TCP 연결 시간 초과 |
+| `SSH_ALGORITHM_INCOMPATIBLE` | 공통 SSH 호스트 키/KEX 알고리즘이 없음 |
 | `SSH_NEGOTIATION_FAILED` | SSH 협상 또는 프로토콜 오류 |
 | `AUTH_FAILED` | SSH 인증 실패 |
 | `ENABLE_FAILED` | Enable 전환 실패 |
@@ -159,7 +160,29 @@ IP/자격증명을 제거한 짧은 설명만 기록합니다. 결과 TXT에는 
 transient 오류 코드가 함께 남으므로 실패 원인을 잃지 않습니다. 인증, 호스트
 키 변경, 모델 오류는 재시도하지 않습니다.
 
-## v0.1.1 범위 밖
+## SSH 알고리즘 호환성
+
+일부 2930F는 SSH 서버 호스트 키로 `ssh-rsa` 서명을 사용하거나
+`diffie-hellman-group14-sha1` KEX만 허용합니다. v0.1.2는 이런 장비와의
+호환성을 위해 Paramiko 4.0.0을 고정합니다. 클라이언트와 장비가 더 강한
+알고리즘을 함께 지원하면 강한 알고리즘이 우선되며, 레거시 알고리즘은 필요한
+장비에서만 협상됩니다.
+
+SHA-1 기반 SSH 협상은 최신 방식보다 약하므로 AOS-Switch 펌웨어와
+`show ip ssh` 출력을 확인하고, 가능하면 강한 알고리즘을 활성화하십시오.
+레거시 연결에서도 최초 호스트 키 SHA-256 지문을 별도 신뢰 경로로 대조하고
+관리망 접근을 제한해야 합니다. 공통 알고리즘이 전혀 없으면
+`SSH_ALGORITHM_INCOMPATIBLE`로 즉시 중단하며 같은 조건을 네 번 반복하지
+않습니다.
+
+Paramiko 4.0.0의 SHA-1 RSA 허용은 저위험 보안 권고
+[`CVE-2026-44405`](https://github.com/advisories/GHSA-r374-rxx8-8654)의 대상입니다.
+이 프로그램은 레거시 2930F 호환을 위해 해당 동작을 의도적으로 사용하므로,
+의존성 감사에서는 대응 ID `PYSEC-2026-2858` 한 건만 명시적으로 예외 처리합니다.
+장비가 SHA-2 기반 SSH를 지원하도록 갱신되면 이 예외와 Paramiko 4 고정을 함께
+제거해야 합니다.
+
+## v0.1.2 범위 밖
 
 - 예약 실행 및 서비스/에이전트 모드
 - Excel/CSV 장비 목록 가져오기
@@ -192,7 +215,7 @@ portable 패키지 빌드:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
-  -PythonPath C:\Python314\python.exe -Version 0.1.1
+  -PythonPath C:\Python314\python.exe -Version 0.1.2
 ```
 
 빌드는 `artifacts\release` 아래에 ZIP, SHA-256, CycloneDX SBOM을 만들고
@@ -211,7 +234,7 @@ verifies SSH host-key fingerprints, applies and validates `no page` before any
 UTF-8 text backups plus an Excel run report. Credentials and the device list are
 session-only. Transient failures use four non-blocking rounds (immediate, then
 5/15/30-second delays); exhausted devices can be manually rerun into a new run
-folder after credentials are re-entered. v0.1.1 is an unsigned prerelease
+folder after credentials are re-entered. v0.1.2 is an unsigned prerelease
 validated with mocks and local package checks, not with a live switch.
 
 ## 라이선스와 보안 제보

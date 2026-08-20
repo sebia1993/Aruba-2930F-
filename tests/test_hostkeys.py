@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from aruba2930f_backup.hostkeys import HostKeyStore, sha256_fingerprint
+from aruba2930f_backup.hostkeys import (
+    HostKeyStore,
+    _classify_probe_failure,
+    sha256_fingerprint,
+)
 from aruba2930f_backup.models import (
     CollectionFailure,
     DeviceTarget,
@@ -25,6 +29,25 @@ def test_sha256_fingerprint_uses_openssh_format_without_padding() -> None:
 
     assert fingerprint.startswith("SHA256:")
     assert "=" not in fingerprint
+
+
+def test_algorithm_incompatibility_is_safe_and_non_retryable() -> None:
+    code, message, transient = _classify_probe_failure(
+        RuntimeError("Incompatible ssh peer (no acceptable kex algorithm)")
+    )
+
+    assert code is ErrorCode.SSH_ALGORITHM_INCOMPATIBLE
+    assert "compatible" in message
+    assert transient is False
+
+
+def test_connection_refused_is_reported_without_endpoint_details() -> None:
+    code, message, transient = _classify_probe_failure(ConnectionRefusedError("private-host"))
+
+    assert code is ErrorCode.SSH_NEGOTIATION_FAILED
+    assert message == "The SSH endpoint refused the TCP connection."
+    assert "private-host" not in message
+    assert transient is True
 
 
 def test_unknown_key_requires_explicit_approval_then_matches(tmp_path) -> None:

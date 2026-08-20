@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected", help="Expected semantic version without a leading v")
-    parser.add_argument("--tag", help="Expected release tag, for example v0.1.1")
+    parser.add_argument("--tag", help="Expected release tag, for example v0.1.2")
     return parser.parse_args()
 
 

@@ -179,6 +179,16 @@ def test_workflow_dependency_installation_fails_closed(workflow_name: str) -> No
     assert install_step.count("if ($LASTEXITCODE -ne 0)") == 3
 
 
+def test_dependency_audit_has_only_the_documented_legacy_ssh_exception() -> None:
+    validation = (ROOT / "tools" / "validate.ps1").read_text(encoding="utf-8")
+    security_policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+
+    assert validation.count('"--ignore-vuln"') == 1
+    assert validation.count('"PYSEC-2026-2858"') == 1
+    assert "PYSEC-2026-2858" in security_policy
+    assert "CVE-2026-44405" in security_policy
+
+
 def test_publish_job_rechecks_remote_refs_and_artifact_provenance() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     build_job, publish_job = workflow.split("  publish-prerelease:", maxsplit=1)

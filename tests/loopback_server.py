@@ -61,8 +61,9 @@ class LoopbackArubaSSHServer:
     username = "fixture-operator"
     password = "test-password"
 
-    def __init__(self) -> None:
+    def __init__(self, *, legacy_algorithms_only: bool = False) -> None:
         self.host_key = paramiko.RSAKey.generate(2048)
+        self.legacy_algorithms_only = legacy_algorithms_only
         self.commands: list[str] = []
         self.auth_attempts: list[tuple[str, str]] = []
         self.pager_advances = 0
@@ -135,6 +136,10 @@ class LoopbackArubaSSHServer:
         channel: paramiko.Channel | None = None
         try:
             transport = paramiko.Transport(client)
+            if self.legacy_algorithms_only:
+                security = transport.get_security_options()
+                security.key_types = ("ssh-rsa",)
+                security.kex = ("diffie-hellman-group14-sha1",)
             transport.add_server_key(self.host_key)
             server = _ServerInterface(self)
             transport.start_server(server=server)

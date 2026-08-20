@@ -5,8 +5,17 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-20
+
 ### 수정
 
+- 실제 운영에 사용 중인 `wlc_acl` 수집기와 동일한 Paramiko 4 계열로 고정해,
+  `ssh-rsa` 또는 `diffie-hellman-group14-sha1`만 제공하는 일부 2930F의 SSH
+  호스트 키 사전점검과 인증 연결 호환성 복구
+- SSH 알고리즘 불일치를 일반 협상 실패와 구분하고 재시도 불가능한
+  `SSH_ALGORITHM_INCOMPATIBLE`로 즉시 보고
+- 레거시 알고리즘만 제공하는 loopback Aruba SSH 서버를 통해 호스트 키 승인,
+  인증 및 `show running-config` 수집 경로를 회귀 테스트로 고정
 - GitHub Actions 태그 체크아웃이 로컬 annotated tag ref를 커밋으로 덮는
   환경에서도 원격 태그 객체를 별도 ref로 검증하도록 릴리즈 게이트 수정
 
@@ -16,6 +25,10 @@
   SHA-256을 다시 대조해 빌드와 게시 사이 ref 이동을 차단
 - PowerShell 네이티브 명령 실패가 다음 성공 명령에 가려지지 않도록 CI와
   릴리즈 설치·검증 단계를 fail-closed 처리
+- 레거시 SSH 호환 연결에서도 기존 SHA-256 호스트 키 사전 검토와 인증 연결의
+  지문 고정 검증을 그대로 유지
+- Paramiko 4의 의도된 SHA-1 호환성 권고(`PYSEC-2026-2858`,
+  `CVE-2026-44405`)만 의존성 감사 예외로 명시하고 제거 조건을 보안 정책에 기록
 
 ## [0.1.1] - 2026-08-20
 
@@ -58,6 +71,7 @@
 - 자격증명과 장비 목록을 세션에만 유지하고 운영 로그에서 민감정보 제거
 - 실제 2930F 미검증 및 미서명 바이너리임을 사전릴리즈에 명시
 
-[Unreleased]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sebia1993/Aruba-2930F-/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sebia1993/Aruba-2930F-/releases/tag/v0.1.0

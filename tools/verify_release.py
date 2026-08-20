@@ -114,7 +114,7 @@ def _verify_sbom(path: Path, version: str) -> bytes:
     if not isinstance(components, list):
         raise ValueError("SBOM has no dependency components")
     names = {str(item.get("name", "")).casefold() for item in components if isinstance(item, dict)}
-    expected = {"netmiko", "openpyxl", "pyside6"}
+    expected = {"netmiko", "paramiko", "openpyxl", "pyside6"}
     if not expected.issubset(names):
         raise ValueError(f"SBOM is missing runtime dependencies: {sorted(expected - names)}")
     return raw

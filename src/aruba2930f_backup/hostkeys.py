@@ -265,17 +265,55 @@ class ParamikoHostKeyProbe:
                 "The SSH endpoint did not respond before the connection timeout.",
                 transient=True,
             ) from exc
-        except (OSError, paramiko.SSHException) as exc:
+        except (EOFError, OSError, paramiko.SSHException) as exc:
+            code, message, transient = _classify_probe_failure(exc)
             raise CollectionFailure(
-                ErrorCode.SSH_NEGOTIATION_FAILED,
-                "The SSH server key could not be retrieved safely.",
-                transient=True,
+                code,
+                message,
+                transient=transient,
             ) from exc
         finally:
             if transport is not None:
                 transport.close()
             if connection is not None:
                 connection.close()
+
+
+def _classify_probe_failure(exc: BaseException) -> tuple[ErrorCode, str, bool]:
+    """Map transport details to stable messages without exposing endpoint data."""
+
+    detail = f"{type(exc).__name__} {exc}".casefold()
+    incompatible_markers = (
+        "incompatiblepeer",
+        "incompatible ssh peer",
+        "no acceptable host key",
+        "no acceptable kex algorithm",
+        "no matching host key",
+        "no matching key exchange",
+    )
+    if any(marker in detail for marker in incompatible_markers):
+        return (
+            ErrorCode.SSH_ALGORITHM_INCOMPATIBLE,
+            "The SSH server and client do not share a compatible host-key or key-exchange algorithm.",
+            False,
+        )
+    if isinstance(exc, ConnectionRefusedError):
+        return (
+            ErrorCode.SSH_NEGOTIATION_FAILED,
+            "The SSH endpoint refused the TCP connection.",
+            True,
+        )
+    if isinstance(exc, EOFError) or "error reading ssh protocol banner" in detail:
+        return (
+            ErrorCode.SSH_NEGOTIATION_FAILED,
+            "The endpoint closed before SSH negotiation completed.",
+            True,
+        )
+    return (
+        ErrorCode.SSH_NEGOTIATION_FAILED,
+        "The SSH server key could not be retrieved safely.",
+        True,
+    )
 
 
 def _validate_observation(observation: HostKeyObservation) -> None:
