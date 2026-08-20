@@ -41,7 +41,7 @@ def test_no_cli_or_environment_activation_path_exists(
         entrypoint._parser().parse_args(["--ui-inspector"])
     assert exc_info.value.code == 2
 
-    controller = DeveloperInspectorController(app, "v0.1.4")
+    controller = DeveloperInspectorController(app, "v0.1.5")
     try:
         assert controller.enabled is False
         assert not hasattr(controller, "enable")
@@ -54,7 +54,7 @@ def test_no_cli_or_environment_activation_path_exists(
 def test_main_window_registers_fixed_surfaces_and_f12_controls_bar(
     app: QApplication,
 ) -> None:
-    controller = DeveloperInspectorController(app, "v0.1.4")
+    controller = DeveloperInspectorController(app, "v0.1.5")
     window = MainWindow(developer_inspector=controller)
     window.show()
     app.processEvents()
@@ -110,7 +110,7 @@ def test_main_window_registers_fixed_surfaces_and_f12_controls_bar(
 
 @pytest.mark.gui
 def test_selection_of_start_button_never_runs_its_action(app: QApplication) -> None:
-    controller = DeveloperInspectorController(app, "v0.1.4")
+    controller = DeveloperInspectorController(app, "v0.1.5")
     window = MainWindow(developer_inspector=controller)
     clicked = QSignalSpy(window.start_button.clicked)
     window.show()
@@ -136,7 +136,7 @@ def test_selection_of_start_button_never_runs_its_action(app: QApplication) -> N
 def test_one_controller_drives_all_custom_dialog_bars_and_static_catalog(
     app: QApplication,
 ) -> None:
-    controller = DeveloperInspectorController(app, "v0.1.4")
+    controller = DeveloperInspectorController(app, "v0.1.5")
     window = MainWindow(developer_inspector=controller)
     window.ip_input.setPlainText("198.51.100.81")
     window.username_input.setText("runtime-operator")

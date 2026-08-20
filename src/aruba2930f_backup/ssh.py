@@ -128,6 +128,9 @@ class NetmikoSSHSession:
                 self._host_key_store,
             )
             self._connection = connection
+            modify_connection_params = getattr(connection, "_modify_connection_params", None)
+            if callable(modify_connection_params):
+                modify_connection_params()
             connection.establish_connection()
             established = True
             _prepare_aruba_login(connection, self._options.connect_timeout_seconds)

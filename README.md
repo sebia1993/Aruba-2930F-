@@ -4,7 +4,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 수집하는 Windows용 GUI 도구입니다. 장비 설정을 변경하지 않으며, 수집 전에
 항상 `no page`를 적용해 수동으로 페이지를 넘기지 않고 한 번에 백업합니다.
 
-> **릴리즈 상태:** v0.1.4는 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
+> **릴리즈 상태:** v0.1.5는 사전릴리즈입니다. 자동 테스트는 가짜 SSH 장비와
 > 로컬 파일 시스템을 사용하며, 실제 Aruba 2930F에서의 동작을 증명하지는
 > 않습니다. 현장 도입 전 별도 검증이 필요합니다.
 
@@ -12,8 +12,8 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 
 - IPv4 주소를 한 줄에 하나씩 붙여 넣어 여러 장비를 동시에 백업
 - 공통 SSH 계정과 선택적 Enable 암호 사용(메모리에만 유지)
-- 최초 접속 시 SSH 호스트 키 SHA-256 지문 일괄 검토
-- 승인된 호스트 키 변경 시 연결 차단
+- 최초 접속 시 SSH 서버 키의 SHA-256 장비 지문 일괄 검토
+- 승인된 SSH 장비 지문 변경 시 연결 차단
 - Aruba 2930F 모델/SKU를 확인한 뒤에만 `show running-config` 실행
 - 장비별 UTF-8 TXT 파일과 실행 결과 `result.xlsx` 생성
 - 5/15/30초 지연을 둔 최대 4라운드 transient 재시도
@@ -25,13 +25,13 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 ## 다운로드와 실행
 
 1. GitHub Releases에서
-   `Aruba2930FConfigBackup_v0.1.4_windows_x64.zip`과 같은 이름의
+   `Aruba2930FConfigBackup_v0.1.5_windows_x64.zip`과 같은 이름의
    `.sha256` 파일을 내려받습니다.
 2. PowerShell에서 해시를 확인합니다.
 
    ```powershell
-   Get-FileHash .\Aruba2930FConfigBackup_v0.1.4_windows_x64.zip -Algorithm SHA256
-   Get-Content .\Aruba2930FConfigBackup_v0.1.4_windows_x64.zip.sha256
+   Get-FileHash .\Aruba2930FConfigBackup_v0.1.5_windows_x64.zip -Algorithm SHA256
+   Get-Content .\Aruba2930FConfigBackup_v0.1.5_windows_x64.zip.sha256
    ```
 
 3. ZIP 전체를 쓰기 가능한 로컬 폴더에 압축 해제합니다. ZIP 안의 EXE만
@@ -50,7 +50,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
    입력합니다.
 3. 동시 접속 수(기본 10, 1~20)와 결과 폴더를 확인하고 **백업 시작**을
    누릅니다.
-4. 새 장비의 SSH 호스트 키 유형과 SHA-256 지문을 실제 장비 또는 관리
+4. 새 장비의 SSH 서버 키 유형과 SHA-256 장비 지문을 실제 장비 또는 관리
    기록과 대조한 다음 승인합니다. 확인할 수 없는 키는 승인하지 마십시오.
 5. 진행 표에서 장비별 단계와 결과를 확인합니다. 완료 후 결과 폴더를 열 수
    있습니다.
@@ -65,7 +65,7 @@ ArubaOS-Switch 기반 **Aruba 2930F** 여러 대의 `running-config`를 SSH로
 
 모든 최초 연결과 재연결에서 다음 순서를 고정합니다.
 
-1. SSH 호스트 키 검증
+1. SSH 장비 지문 검증
 2. 로그인 배너 처리, EXEC 프롬프트 확인 및 선택적 Enable
 3. `no page` 실행과 CLI 응답/프롬프트 검증
 4. 터미널 폭 511 설정
@@ -86,6 +86,12 @@ ArubaOS-Switch 로그인 배너의 ANSI/백스페이스 제어 문자를 정리�
 재사용하며, 명령 응답의 마지막 줄이 그 프롬프트와 일치할 때만 완료로
 인정합니다. `(config)#` 같은 비-EXEC 모드는 허용하지 않습니다.
 
+EXEC 프롬프트는 ANSI·백스페이스를 정리한 뒤 한 줄이고 `#` 또는 `>`로 끝나는
+정확한 종료 토큰으로 취급합니다. 공백, 괄호형 표시 래퍼나 `+`가 있어도
+수집할 수 있지만 단순 호스트명 형식이 아니면 결과의 Hostname은 비워 두고
+백업 파일명에는 장비 IP를 사용합니다. `switch(config)#`와
+`switch(vlan-10)#`처럼 장비 이름 뒤에 CLI 모드가 붙은 값은 계속 거부합니다.
+
 ## 지연 재시도 정책
 
 일시적인 네트워크 또는 명령 시간초과처럼 `retryable`로 분류된 실패만 다음
@@ -98,11 +104,11 @@ ArubaOS-Switch 로그인 배너의 ANSI/백스페이스 제어 문자를 정리�
 | 3/4 | 두 번째 실패 후 15초 |
 | 4/4 | 세 번째 실패 후 30초 |
 
-- 호스트 키 사전점검과 인증 후 백업의 시도 횟수는 별도로 계산합니다. 화면에는
-  `키 N/4 · 백업 N/4`로 표시됩니다.
+- SSH 장비 지문 사전점검과 인증 후 백업의 시도 횟수는 별도로 계산합니다.
+  화면에는 `지문 N/4 · 백업 N/4`로 표시됩니다.
 - 대기 대상은 작업 스레드를 점유하지 않고 지연 큐로 돌아갑니다. 따라서 한
   장비가 `재시도 대기` 상태여도 정상 장비의 연결·백업·저장은 계속됩니다.
-- 인증 실패, 호스트 키 변경, 미지원 모델처럼 영구적인 오류는 즉시 일반
+- 인증 실패, SSH 장비 지문 변경, 미지원 모델처럼 영구적인 오류는 즉시 일반
   실패로 끝나며 재시도하지 않습니다.
 - transient 오류가 4번째에도 발생하면 원래 오류 코드는 보존하면서 상태를
   `retry_exhausted`로 확정합니다. 화면에는 `재시도 소진`으로 표시합니다.
@@ -130,7 +136,8 @@ Total Connection Attempts, 소요시간, 파일 경로/해시 및 민감정보�
 오류 정보와 `Diagnostic Code`가 들어갑니다. Summary는 성공,
 Retry Exhausted, 기타 실패와 취소를 별도로 집계합니다.
 
-승인한 호스트 키만 다음 사용자별 로컬 파일에 보관됩니다.
+승인한 SSH 장비 지문만 다음 사용자별 로컬 파일에 보관됩니다. 이 파일에는
+로그인용 개인 키가 아니라 장비가 제시한 SSH 서버 공개 키의 지문만 기록됩니다.
 
 ```text
 %LOCALAPPDATA%\Aruba2930FConfigBackup\known_hosts.json
@@ -147,8 +154,8 @@ IP/자격증명을 제거한 짧은 설명만 기록합니다. 실패 진단 코
 | 코드 | 의미 |
 |---|---|
 | `INPUT_INVALID` | IP, 포트, 동시 작업 수 등 입력이 잘못됨 |
-| `HOST_KEY_REJECTED` | 사용자가 새 호스트 키를 승인하지 않음 |
-| `HOST_KEY_CHANGED` | 저장된 호스트 키와 현재 키가 다름 |
+| `HOST_KEY_REJECTED` | 사용자가 새 SSH 장비 지문을 승인하지 않음 |
+| `HOST_KEY_CHANGED` | 저장된 SSH 장비 지문과 현재 지문이 다름 |
 | `TCP_TIMEOUT` | 장비 TCP 연결 시간 초과 |
 | `SSH_ALGORITHM_INCOMPATIBLE` | 공통 SSH 호스트 키/KEX 알고리즘이 없음 |
 | `SSH_NEGOTIATION_FAILED` | SSH 협상 또는 프로토콜 오류 |
@@ -202,14 +209,14 @@ aruba2930f-diagnose --json A3F1-010EPMRC-3 A3F1-010C8W18-V
 개발자 모드는 실행할 때마다 꺼진 상태로 시작하며 환경변수, 명령줄, 설정,
 레지스트리나 파일로 켜거나 유지할 수 없습니다. 요소 목록과 복사 문구는
 소스 코드에 고정된 설명만 사용합니다. 입력한 IP, 사용자 이름, 암호,
-호스트 키 지문, 진단 코드, 표의 결과와 오류 내용은 읽거나 포함하지 않습니다.
+SSH 장비 지문, 진단 코드, 표의 결과와 오류 내용은 읽거나 포함하지 않습니다.
 이 기능은 화면 수정 요청을 정확히 전달하기 위한 보조 도구이며 접근 제어나
 보안 경계를 대신하지 않습니다.
 
 ## SSH 알고리즘 호환성
 
 일부 2930F는 SSH 서버 호스트 키로 `ssh-rsa` 서명을 사용하거나
-`diffie-hellman-group14-sha1` KEX만 허용합니다. v0.1.4는 이런 장비와의
+`diffie-hellman-group14-sha1` KEX만 허용합니다. v0.1.5는 이런 장비와의
 호환성을 위해 Paramiko 4.0.0을 고정합니다. 클라이언트와 장비가 더 강한
 알고리즘을 함께 지원하면 강한 알고리즘이 우선되며, 레거시 알고리즘은 필요한
 장비에서만 협상됩니다.
@@ -228,7 +235,7 @@ Paramiko 4.0.0의 SHA-1 RSA 허용은 저위험 보안 권고
 장비가 SHA-2 기반 SSH를 지원하도록 갱신되면 이 예외와 Paramiko 4 고정을 함께
 제거해야 합니다.
 
-## v0.1.4 범위 밖
+## v0.1.5 범위 밖
 
 - 예약 실행 및 서비스/에이전트 모드
 - Excel/CSV 장비 목록 가져오기
@@ -261,7 +268,7 @@ portable 패키지 빌드:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
-  -PythonPath C:\Python314\python.exe -Version 0.1.4
+  -PythonPath C:\Python314\python.exe -Version 0.1.5
 ```
 
 빌드는 `artifacts\release` 아래에 ZIP, SHA-256, CycloneDX SBOM을 만들고
@@ -280,7 +287,7 @@ verifies SSH host-key fingerprints, applies and validates `no page` before any
 UTF-8 text backups plus an Excel run report. Credentials and the device list are
 session-only. Transient failures use four non-blocking rounds (immediate, then
 5/15/30-second delays); exhausted devices can be manually rerun into a new run
-folder after credentials are re-entered. v0.1.4 is an unsigned prerelease
+folder after credentials are re-entered. v0.1.5 is an unsigned prerelease
 validated with mocks and local package checks, not with a live switch.
 
 ## 라이선스와 보안 제보

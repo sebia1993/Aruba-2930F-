@@ -48,6 +48,8 @@ ARUBA_2930F_MODELS: dict[str, str] = {
 _SKU_RE = re.compile(r"\b(JL\d{3}A)\b", re.IGNORECASE)
 _SOFTWARE_RE = re.compile(r"\b([A-Z]{2}\.\d{2}\.\d{2}\.\d{4})\b")
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_APPENDED_CLI_MODE_RE = re.compile(r"^.+\([^()\r\n]+\)[ \t]*[#>]$")
+_MAX_PROMPT_LENGTH = 256
 _CONFLICTING_FAMILY_RE = re.compile(
     r"\b(?:2530|2540|2920|2930M|3810M|5400R|6200F|6300[FM]|6400|CX)\b",
     re.IGNORECASE,
@@ -199,22 +201,37 @@ def hostname_from_prompt(prompt: str) -> str | None:
 
 
 def require_valid_prompt(prompt: str) -> str | None:
-    hostname = hostname_from_prompt(prompt)
-    if hostname is None:
-        clean = _ANSI_RE.sub("", prompt or "").strip()
-        if not clean:
-            detail = DiagnosticDetail.PROMPT_EMPTY
-        elif re.search(r"\([^\r\n]*\)[#>]$", clean):
-            detail = DiagnosticDetail.PROMPT_NON_EXEC_MODE
-        else:
-            detail = DiagnosticDetail.PROMPT_FORMAT
-        raise CollectionFailure(
-            ErrorCode.PROMPT_PARSE_FAILED,
-            "The final device prompt could not be verified.",
-            transient=True,
-            diagnostic_detail=detail,
-        )
-    return hostname
+    """Validate an exact EXEC prompt while extracting only simple hostnames.
+
+    Aruba prompts can contain display wrappers, spaces, and model characters
+    that are not valid DNS hostname characters. Those prompts are safe to use
+    as opaque command terminators, but they are not promoted to hostname
+    metadata. Appended CLI modes such as ``switch(config)#`` remain blocked.
+    """
+
+    clean = _ANSI_RE.sub("", prompt or "").strip()
+    if not clean:
+        detail = DiagnosticDetail.PROMPT_EMPTY
+    elif _APPENDED_CLI_MODE_RE.fullmatch(clean):
+        detail = DiagnosticDetail.PROMPT_NON_EXEC_MODE
+    elif (
+        len(clean) > _MAX_PROMPT_LENGTH
+        or "\n" in clean
+        or "\r" in clean
+        or clean[-1] not in "#>"
+        or not clean[:-1].strip()
+        or any(not character.isprintable() for character in clean)
+    ):
+        detail = DiagnosticDetail.PROMPT_FORMAT
+    else:
+        return hostname_from_prompt(clean)
+
+    raise CollectionFailure(
+        ErrorCode.PROMPT_PARSE_FAILED,
+        "The final device prompt could not be verified.",
+        transient=True,
+        diagnostic_detail=detail,
+    )
 
 
 def normalize_config_text(output: str) -> str:

@@ -262,7 +262,7 @@ class CollectorBackupService:
                 finished_at=now,
                 duration_seconds=0.0,
                 error_code=ErrorCode.CANCELLED,
-                error_message="호스트 키 확인 중 사용자가 실행을 취소했습니다.",
+                error_message="SSH 장비 지문 확인 중 사용자가 실행을 취소했습니다.",
             )
             for target in targets
         ]
@@ -409,7 +409,7 @@ class CollectorBackupService:
                         attempt - 1,
                         delay_seconds=remaining,
                         error_code=pending_errors.get(target.endpoint),
-                        message="호스트 키 확인 재시도 대기 중입니다.",
+                        message="SSH 장비 지문 확인 재시도 대기 중입니다.",
                         round_number=attempt,
                     )
                 wait_method = getattr(self.collector, "wait_for_retry_delay", None)
@@ -426,7 +426,7 @@ class CollectorBackupService:
                         CollectionStage.RETRY_QUEUED,
                         attempt - 1,
                         error_code=pending_errors.get(target.endpoint),
-                        message="호스트 키 확인 재시도를 시작합니다.",
+                        message="SSH 장비 지문 확인 재시도를 시작합니다.",
                         round_number=attempt,
                     )
 
@@ -492,7 +492,7 @@ class CollectorBackupService:
                 changed_results = self._failed_host_key_results(
                     changed,
                     code=ErrorCode.HOST_KEY_CHANGED,
-                    message="저장된 SSH 호스트 키와 현재 지문이 달라 해당 장비를 차단했습니다.",
+                    message="저장된 SSH 장비 지문과 현재 지문이 달라 해당 장비를 차단했습니다.",
                 )
                 for result in changed_results:
                     by_endpoint[result.target.endpoint] = result
@@ -515,9 +515,9 @@ class CollectorBackupService:
                     unknown,
                     code=ErrorCode.CANCELLED if cancelled else ErrorCode.HOST_KEY_REJECTED,
                     message=(
-                        "호스트 키 확인 중 사용자가 실행을 취소했습니다."
+                        "SSH 장비 지문 확인 중 사용자가 실행을 취소했습니다."
                         if cancelled
-                        else "사용자가 SSH 호스트 키 승인을 취소했습니다."
+                        else "사용자가 SSH 장비 지문 승인을 취소했습니다."
                     ),
                     status=DeviceStatus.CANCELLED if cancelled else DeviceStatus.FAILED,
                 )
@@ -787,14 +787,14 @@ class HostKeyApprovalDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.developer_inspector = developer_inspector
-        self.setWindowTitle("SSH 호스트 키 확인")
+        self.setWindowTitle("SSH 장비 지문 확인")
         self.resize(820, 400)
         self._checks = tuple(checks)
         self.approval_allowed = not any(self._is_changed(check) for check in checks)
 
         layout = QVBoxLayout(self)
         explanation = QLabel(
-            "인증 전에 장비가 제시한 SSH 호스트 키를 확인하세요. "
+            "인증 전에 장비가 제시한 SSH 서버 키의 SHA-256 지문을 확인하세요. "
             "현장에 등록된 지문과 일치할 때만 모두 승인하십시오."
         )
         explanation.setWordWrap(True)
@@ -833,7 +833,7 @@ class HostKeyApprovalDialog(QDialog):
             parent=self,
         )
         self.approve_button = buttons.button(QDialogButtonBox.StandardButton.Yes)
-        self.approve_button.setText("표시된 키 모두 승인")
+        self.approve_button.setText("표시된 지문 모두 승인")
         self.approve_button.setEnabled(self.approval_allowed)
         self.cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
         self.cancel_button.setText("취소")
@@ -846,44 +846,44 @@ class HostKeyApprovalDialog(QDialog):
         inspector = self.developer_inspector
         if inspector is None:
             return
-        path = "SSH 호스트 키 확인"
+        path = "SSH 장비 지문 확인"
         inspector.attach_host_layout(self, layout)
         registrations: tuple[tuple[QWidget, str, str, str], ...] = (
             (
                 self,
-                "SSH 호스트 키 확인 창",
+                "SSH 장비 지문 확인 창",
                 "HOSTKEY-APPROVAL-DIALOG",
-                "새 SSH 호스트 키의 유형과 SHA-256 지문을 검토합니다.",
+                "새 SSH 서버 키의 유형과 SHA-256 장비 지문을 검토합니다.",
             ),
             (
                 self.table,
-                "SSH 호스트 키 확인 표",
+                "SSH 장비 지문 확인 표",
                 "HOSTKEY-APPROVAL-TABLE",
-                "검토할 장비별 SSH 호스트 키 정보를 표시합니다.",
+                "검토할 장비별 SSH 서버 키와 지문 정보를 표시합니다.",
             ),
             (
                 self.table.viewport(),
-                "SSH 호스트 키 확인 표 본문",
+                "SSH 장비 지문 확인 표 본문",
                 "HOSTKEY-APPROVAL-TABLE-BODY",
-                "장비별 SSH 호스트 키 행이 표시되는 표 본문입니다.",
+                "장비별 SSH 서버 키 지문 행이 표시되는 표 본문입니다.",
             ),
             (
                 self.table.horizontalHeader(),
-                "SSH 호스트 키 확인 표 머리글",
+                "SSH 장비 지문 확인 표 머리글",
                 "HOSTKEY-APPROVAL-TABLE-HEADER",
-                "호스트 키 표의 열 이름을 표시합니다.",
+                "장비 지문 표의 열 이름을 표시합니다.",
             ),
             (
                 self.approve_button,
-                "호스트 키 승인 버튼",
+                "SSH 장비 지문 승인 버튼",
                 "HOSTKEY-APPROVAL-ACCEPT",
-                "표시된 새 SSH 호스트 키를 모두 승인합니다.",
+                "표시된 새 SSH 장비 지문을 모두 승인합니다.",
             ),
             (
                 self.cancel_button,
-                "호스트 키 승인 취소 버튼",
+                "SSH 장비 지문 승인 취소 버튼",
                 "HOSTKEY-APPROVAL-CANCEL",
-                "호스트 키 승인을 취소하고 연결을 중단합니다.",
+                "장비 지문 승인을 취소하고 연결을 중단합니다.",
             ),
         )
         for widget, name, stable_id, purpose in registrations:
@@ -892,7 +892,7 @@ class HostKeyApprovalDialog(QDialog):
             inspector.register_widget(
                 self.warning_label,
                 _ui_metadata(
-                    "호스트 키 변경 경고",
+                    "SSH 장비 지문 변경 경고",
                     "HOSTKEY-APPROVAL-WARNING",
                     path,
                     "저장된 키와 다른 지문이 감지되어 승인이 차단됐음을 알립니다.",
@@ -918,15 +918,15 @@ class TrustedKeysDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.developer_inspector = developer_inspector
-        self.setWindowTitle("신뢰 SSH 키 관리")
+        self.setWindowTitle("SSH 장비 지문 관리")
         self.resize(760, 380)
         self._entries = tuple(entries)
         self._remove_callback = remove_callback
 
         layout = QVBoxLayout(self)
         note = QLabel(
-            "키를 제거하면 다음 접속 때 새 키로 다시 표시됩니다. "
-            "키 변경 경고를 우회하기 위한 용도로 사용하지 마십시오."
+            "지문을 제거하면 다음 접속 때 새 지문으로 다시 표시됩니다. "
+            "서버 키 변경 경고를 우회하기 위한 용도로 사용하지 마십시오."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -948,7 +948,7 @@ class TrustedKeysDialog(QDialog):
         layout.addWidget(self.table)
 
         actions = QHBoxLayout()
-        self.remove_button = QPushButton("선택 키 제거", self)
+        self.remove_button = QPushButton("선택 지문 제거", self)
         self.remove_button.setObjectName("removeTrustedKeyButton")
         self.remove_button.setEnabled(remove_callback is not None)
         self.remove_button.clicked.connect(self._remove_selected)
@@ -964,44 +964,44 @@ class TrustedKeysDialog(QDialog):
         inspector = self.developer_inspector
         if inspector is None:
             return
-        path = "신뢰 SSH 키 관리"
+        path = "SSH 장비 지문 관리"
         inspector.attach_host_layout(self, layout)
         registrations: tuple[tuple[QWidget, str, str, str], ...] = (
             (
                 self,
-                "신뢰 SSH 키 관리 창",
+                "SSH 장비 지문 관리 창",
                 "HOSTKEY-TRUSTED-DIALOG",
-                "사용자가 승인해 저장한 SSH 호스트 키를 관리합니다.",
+                "사용자가 승인해 저장한 SSH 장비 지문을 관리합니다.",
             ),
             (
                 self.table,
-                "신뢰 SSH 키 표",
+                "SSH 장비 지문 표",
                 "HOSTKEY-TRUSTED-TABLE",
-                "저장된 SSH 호스트 키 목록을 표시합니다.",
+                "저장된 SSH 장비 지문 목록을 표시합니다.",
             ),
             (
                 self.table.viewport(),
-                "신뢰 SSH 키 표 본문",
+                "SSH 장비 지문 표 본문",
                 "HOSTKEY-TRUSTED-TABLE-BODY",
-                "저장된 SSH 호스트 키 행이 표시되는 표 본문입니다.",
+                "저장된 SSH 장비 지문 행이 표시되는 표 본문입니다.",
             ),
             (
                 self.table.horizontalHeader(),
-                "신뢰 SSH 키 표 머리글",
+                "SSH 장비 지문 표 머리글",
                 "HOSTKEY-TRUSTED-TABLE-HEADER",
-                "신뢰 키 표의 열 이름을 표시합니다.",
+                "장비 지문 표의 열 이름을 표시합니다.",
             ),
             (
                 self.remove_button,
-                "선택 신뢰 키 제거 버튼",
+                "선택 SSH 장비 지문 제거 버튼",
                 "HOSTKEY-TRUSTED-REMOVE",
-                "선택한 저장 SSH 호스트 키를 확인 후 제거합니다.",
+                "선택한 저장 SSH 장비 지문을 확인 후 제거합니다.",
             ),
             (
                 self.close_button,
-                "신뢰 키 관리 닫기 버튼",
+                "SSH 장비 지문 관리 닫기 버튼",
                 "HOSTKEY-TRUSTED-CLOSE",
-                "신뢰 SSH 키 관리 창을 닫습니다.",
+                "SSH 장비 지문 관리 창을 닫습니다.",
             ),
         )
         for widget, name, stable_id, purpose in registrations:
@@ -1014,8 +1014,8 @@ class TrustedKeysDialog(QDialog):
             return
         answer = QMessageBox.question(
             self,
-            "신뢰 키 제거",
-            f"선택한 {len(rows)}개 키를 제거하시겠습니까?",
+            "SSH 장비 지문 제거",
+            f"선택한 {len(rows)}개 지문을 제거하시겠습니까?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1031,7 +1031,7 @@ class MainWindow(QMainWindow):
     RESULT_COLUMNS = ("IP", "호스트명", "모델/SKU", "상태", "접속 시도", "오류")
     STATUS_LABELS: ClassVar[dict[str, str]] = {
         "queued": "대기",
-        "host_key_checking": "호스트 키 확인",
+        "host_key_checking": "SSH 장비 지문 확인",
         "connecting": "접속 중",
         "enabling": "Enable 진입",
         "disabling_paging": "페이지 출력 해제",
@@ -1152,7 +1152,7 @@ class MainWindow(QMainWindow):
         self.browse_button.setObjectName("browseOutputButton")
         self.browse_button.clicked.connect(self._browse_output)
         options_layout.addWidget(self.browse_button, 1, 2)
-        self.trust_keys_button = QPushButton("신뢰 키 관리…", options_group)
+        self.trust_keys_button = QPushButton("SSH 장비 지문 관리…", options_group)
         self.trust_keys_button.setObjectName("trustKeysButton")
         self.trust_keys_button.clicked.connect(self._manage_trusted_keys)
         options_layout.addWidget(self.trust_keys_button, 0, 2)
@@ -1284,7 +1284,7 @@ class MainWindow(QMainWindow):
                 "실행 옵션 영역",
                 "BACKUP-OPTIONS-SECTION",
                 "메인 화면 > 실행 옵션",
-                "동시 접속 수와 결과 저장 위치 및 신뢰 키 관리를 제공합니다.",
+                "동시 접속 수와 결과 저장 위치 및 SSH 장비 지문 관리를 제공합니다.",
             ),
             (
                 self.concurrency_input,
@@ -1309,10 +1309,10 @@ class MainWindow(QMainWindow):
             ),
             (
                 self.trust_keys_button,
-                "신뢰 키 관리 버튼",
+                "SSH 장비 지문 관리 버튼",
                 "HOSTKEY-MANAGEMENT",
                 "메인 화면 > 실행 옵션",
-                "승인해 저장한 SSH 호스트 키 관리 창을 엽니다.",
+                "승인해 저장한 SSH 장비 지문 관리 창을 엽니다.",
             ),
             (
                 self.start_button,
@@ -1586,7 +1586,7 @@ class MainWindow(QMainWindow):
     def _set_attempt_cell(self, row: int, target: str) -> None:
         host_attempts = self._host_key_attempts.get(target, 0)
         backup_attempts = self._backup_attempts.get(target, 0)
-        self._set_cell(row, 4, f"키 {host_attempts}/4 · 백업 {backup_attempts}/4")
+        self._set_cell(row, 4, f"지문 {host_attempts}/4 · 백업 {backup_attempts}/4")
 
     @Slot(object)
     def _on_collection_event(self, event: object) -> None:
@@ -1809,12 +1809,20 @@ class MainWindow(QMainWindow):
             try:
                 self._service = build_default_service()
             except Exception:
-                QMessageBox.critical(self, "키 관리", "신뢰 키 저장소를 열지 못했습니다.")
+                QMessageBox.critical(
+                    self,
+                    "장비 지문 관리",
+                    "SSH 장비 지문 저장소를 열지 못했습니다.",
+                )
                 return
         list_method = getattr(self._service, "list_trusted_host_keys", None)
         remove_method = getattr(self._service, "remove_trusted_host_keys", None)
         if not callable(list_method):
-            QMessageBox.information(self, "키 관리", "저장된 신뢰 키가 없습니다.")
+            QMessageBox.information(
+                self,
+                "장비 지문 관리",
+                "저장된 SSH 장비 지문이 없습니다.",
+            )
             return
         entries = tuple(list_method())
         dialog = TrustedKeysDialog(

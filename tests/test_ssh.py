@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 import types
 from pathlib import Path
@@ -27,6 +28,9 @@ class FakeConnection:
         self.current_chunks: list[str] = []
         self.deferred_chunks: list[str] = []
         self.disconnected = False
+
+    def _modify_connection_params(self) -> None:
+        self.calls.append("modify")
 
     def establish_connection(self) -> None:
         self.calls.append("establish")
@@ -128,6 +132,7 @@ def test_explicit_setup_and_show_read_order(tmp_path) -> None:
     assert setup_commands == ["no page", "terminal width 511"]
     assert writes == ["show version\n"]
     assert output == "Aruba JL253A 2930F"
+    assert connection.calls.index("modify") < connection.calls.index("establish")
 
 
 def test_aruba_login_banner_is_advanced_and_control_codes_are_removed(tmp_path) -> None:
@@ -226,6 +231,40 @@ def test_setup_show_and_get_prompt_reuse_the_verified_prompt(tmp_path) -> None:
     assert connection.calls.count("find_prompt") == 1
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    (
+        "Aruba-2930F-48G-PoE+ #",
+        "(Aruba 2930F) #",
+        "branch switch >",
+    ),
+)
+def test_complex_exec_prompt_is_cached_as_an_exact_opaque_terminator(
+    tmp_path: Path,
+    prompt: str,
+) -> None:
+    connection = FakeConnection()
+
+    def find_prompt() -> str:
+        connection.calls.append("find_prompt")
+        return prompt
+
+    connection.find_prompt = find_prompt  # type: ignore[method-assign]
+
+    def setup(command: str, **kwargs: Any) -> str:
+        assert kwargs["expect_string"] == re.escape(prompt)
+        return f"{command}\n{prompt}"
+
+    connection.send_command = setup  # type: ignore[method-assign]
+    session = make_session(tmp_path, connection)
+
+    session.connect()
+    session.disable_paging()
+
+    assert session.get_prompt() == prompt
+    assert connection.calls.count("find_prompt") == 1
+
+
 def test_split_and_delayed_prompt_is_read_to_exact_completion(tmp_path) -> None:
     connection = FakeConnection(
         {
@@ -282,9 +321,13 @@ def test_disable_paging_rejects_cli_error_and_does_not_hide_details(tmp_path) ->
     assert "Invalid input" not in captured.value.safe_message
 
 
-def test_configuration_mode_prompt_sends_no_setup_or_show_commands(tmp_path) -> None:
+@pytest.mark.parametrize("prompt", ("edge-lab(config)#", "edge-lab(vlan-10)#"))
+def test_configuration_mode_prompt_sends_no_setup_or_show_commands(
+    tmp_path: Path,
+    prompt: str,
+) -> None:
     connection = FakeConnection()
-    connection.find_prompt = lambda: "edge-lab(config)#"  # type: ignore[method-assign]
+    connection.find_prompt = lambda: prompt  # type: ignore[method-assign]
     session = make_session(tmp_path, connection)
 
     with pytest.raises(CollectionFailure) as captured:

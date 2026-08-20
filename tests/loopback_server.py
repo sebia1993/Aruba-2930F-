@@ -57,7 +57,6 @@ class _ServerInterface(paramiko.ServerInterface):
 class LoopbackArubaSSHServer:
     """Small password-authenticated Aruba-like CLI bound only to 127.0.0.1."""
 
-    prompt = "edge-lab#"
     username = "fixture-operator"
     password = "test-password"
 
@@ -66,10 +65,12 @@ class LoopbackArubaSSHServer:
         *,
         legacy_algorithms_only: bool = False,
         login_banner: bool = False,
+        prompt: str = "edge-lab#",
     ) -> None:
         self.host_key = paramiko.RSAKey.generate(2048)
         self.legacy_algorithms_only = legacy_algorithms_only
         self.login_banner = login_banner
+        self.prompt = prompt
         self.commands: list[str] = []
         self.auth_attempts: list[tuple[str, str]] = []
         self.pager_advances = 0

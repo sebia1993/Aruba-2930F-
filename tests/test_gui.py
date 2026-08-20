@@ -27,6 +27,7 @@ from aruba2930f_backup.gui import (
     DiagnosticCodesDialog,
     HostKeyApprovalDialog,
     MainWindow,
+    TrustedKeysDialog,
 )
 from aruba2930f_backup.hostkeys import HostKeyStore, sha256_fingerprint
 from aruba2930f_backup.models import (
@@ -236,7 +237,22 @@ def test_changed_host_key_can_never_be_approved(app: QApplication) -> None:
 
     assert dialog.approval_allowed is False
     assert dialog.approve_button.isEnabled() is False
+    assert dialog.windowTitle() == "SSH 장비 지문 확인"
+    assert dialog.approve_button.text() == "표시된 지문 모두 승인"
     dialog.close()
+
+
+@pytest.mark.gui
+def test_host_key_controls_use_device_fingerprint_wording(app: QApplication) -> None:
+    window = MainWindow(service=FakeService(Path.cwd()))
+    dialog = TrustedKeysDialog((), None)
+
+    assert window.trust_keys_button.text() == "SSH 장비 지문 관리…"
+    assert dialog.windowTitle() == "SSH 장비 지문 관리"
+    assert dialog.remove_button.text() == "선택 지문 제거"
+
+    dialog.close()
+    window.close()
 
 
 @pytest.mark.gui
@@ -293,7 +309,7 @@ def test_retry_wait_status_does_not_advance_attempt_before_next_connection(
 
     row = window._row_by_target["192.0.2.20"]
     assert window.result_table.item(row, 3).text() == "재시도 대기"
-    assert window.result_table.item(row, 4).text() == "키 1/4 · 백업 0/4"
+    assert window.result_table.item(row, 4).text() == "지문 1/4 · 백업 0/4"
     assert window.result_table.item(row, 3).foreground().color().name() == "#9a6700"
     window.close()
 
@@ -672,7 +688,7 @@ def test_retry_exhausted_button_runs_only_captured_subset_with_new_password(
     assert window.retry_exhausted_button.isEnabled()
     exhausted_row = window._row_by_target["192.0.2.11"]
     assert window.result_table.item(exhausted_row, 3).text() == "재시도 소진"
-    assert window.result_table.item(exhausted_row, 4).text() == "키 1/4 · 백업 4/4"
+    assert window.result_table.item(exhausted_row, 4).text() == "지문 1/4 · 백업 4/4"
     assert window.password_input.text() == ""
     assert window.ip_input.toPlainText() == "192.0.2.10\n192.0.2.11"
 

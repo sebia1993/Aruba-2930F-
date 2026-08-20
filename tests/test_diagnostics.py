@@ -49,7 +49,7 @@ def test_golden_diagnostic_code_and_round_trip() -> None:
     assert decoded.detail is DiagnosticDetail.PROMPT_FORMAT
 
 
-def test_current_release_diagnostic_code_golden_vector() -> None:
+def test_previous_release_diagnostic_code_golden_vector() -> None:
     code = encode_diagnostic_code(
         version="0.1.4",
         phase=DiagnosticPhase.CONFIG_COLLECTION,
@@ -62,6 +62,33 @@ def test_current_release_diagnostic_code_golden_vector() -> None:
 
     assert code == "A3F1-010JPMRC-T"
     assert decode_diagnostic_code(code).version == "0.1.4"
+
+
+def test_current_release_diagnostic_code_golden_vector() -> None:
+    code = encode_diagnostic_code(
+        version="0.1.5",
+        phase=DiagnosticPhase.CONFIG_COLLECTION,
+        error_code=ErrorCode.PROMPT_PARSE_FAILED,
+        status=DiagnosticStatus.RETRY_EXHAUSTED,
+        host_key_attempts=1,
+        backup_attempts=4,
+        detail=DiagnosticDetail.PROMPT_FORMAT,
+    )
+
+    assert code == "A3F1-010PPMRC-C"
+    assert decode_diagnostic_code(code).version == "0.1.5"
+
+
+def test_reported_v013_session_prompt_code_decodes_without_sensitive_context() -> None:
+    decoded = decode_diagnostic_code("A3F1-010DPMRC-S")
+
+    assert decoded.version == "0.1.3"
+    assert decoded.phase is DiagnosticPhase.SESSION_SETUP
+    assert decoded.error_code is ErrorCode.PROMPT_PARSE_FAILED
+    assert decoded.status is DiagnosticStatus.RETRY_EXHAUSTED
+    assert decoded.host_key_attempts == 1
+    assert decoded.backup_attempts == 4
+    assert decoded.detail is DiagnosticDetail.PROMPT_FORMAT
 
 
 def test_decoder_accepts_lowercase_and_crockford_typo_aliases() -> None:

@@ -142,6 +142,9 @@ def test_prompt_hostname_requires_single_exec_prompt() -> None:
     assert hostname_from_prompt("edge-lab>") == "edge-lab"
     assert hostname_from_prompt("edge-lab(config)#") is None
     assert hostname_from_prompt("bad prompt#") is None
+    assert require_valid_prompt("bad prompt#") is None
+    assert require_valid_prompt("(Aruba 2930F) #") is None
+    assert require_valid_prompt("Aruba-2930F-48G-PoE+ #") is None
     with pytest.raises(CollectionFailure) as captured:
         require_valid_prompt("not a prompt")
     assert captured.value.code is ErrorCode.PROMPT_PARSE_FAILED
@@ -152,7 +155,11 @@ def test_prompt_hostname_requires_single_exec_prompt() -> None:
     (
         ("", DiagnosticDetail.PROMPT_EMPTY),
         ("edge-lab(config)#", DiagnosticDetail.PROMPT_NON_EXEC_MODE),
-        ("bad prompt#", DiagnosticDetail.PROMPT_FORMAT),
+        ("edge-lab(vlan-10)#", DiagnosticDetail.PROMPT_NON_EXEC_MODE),
+        ("bad prompt", DiagnosticDetail.PROMPT_FORMAT),
+        ("bad\nprompt#", DiagnosticDetail.PROMPT_FORMAT),
+        ("bad\x00prompt#", DiagnosticDetail.PROMPT_FORMAT),
+        ("x" * 256 + "#", DiagnosticDetail.PROMPT_FORMAT),
     ),
 )
 def test_prompt_failure_details_are_stable(prompt: str, detail: DiagnosticDetail) -> None:
