@@ -1,0 +1,4 @@
+# Keep these direct runtime pins synchronized with pyproject.toml.
+netmiko==4.6.0
+openpyxl==3.1.5
+PySide6==6.11.0
