@@ -12,6 +12,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
 from aruba2930f_backup.gui import MainWindow
@@ -68,6 +69,27 @@ def _save_result_example(output: Path) -> None:
     app.processEvents()
 
 
+def _verify_image(path: Path) -> None:
+    if not path.is_file():
+        raise RuntimeError(f"문서 화면 파일이 생성되지 않았습니다: {path}")
+
+    image = QImage(str(path))
+    if image.isNull():
+        raise RuntimeError(f"생성된 문서 화면을 PNG로 다시 읽을 수 없습니다: {path}")
+    if image.width() < 800 or image.height() < 600:
+        raise RuntimeError(
+            f"문서 화면 해상도가 예상보다 작습니다: {path} "
+            f"({image.width()}x{image.height()})"
+        )
+    if path.stat().st_size < 1_024:
+        raise RuntimeError(f"문서 화면 파일이 비정상적으로 작습니다: {path}")
+
+    print(
+        f"created: {path} "
+        f"({image.width()}x{image.height()}, {path.stat().st_size} bytes)"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
@@ -78,11 +100,8 @@ def main() -> int:
     _save_main_window(output)
     _save_result_example(output)
 
-    expected = (output / "main-window.png", output / "result-example.png")
-    for path in expected:
-        if not path.is_file() or path.stat().st_size < 10_000:
-            raise RuntimeError(f"문서 화면이 정상적으로 생성되지 않았습니다: {path}")
-        print(f"created: {path} ({path.stat().st_size} bytes)")
+    for path in (output / "main-window.png", output / "result-example.png"):
+        _verify_image(path)
     return 0
 
 
