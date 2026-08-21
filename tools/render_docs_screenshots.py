@@ -12,16 +12,35 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QImage
 from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
 from aruba2930f_backup.gui import MainWindow
+
+
+def _apply_documentation_font(app: QApplication) -> None:
+    font_path = os.environ.get("DOCS_FONT_PATH", "").strip()
+    if not font_path:
+        return
+
+    font_id = QFontDatabase.addApplicationFont(font_path)
+    if font_id < 0:
+        raise RuntimeError(f"문서 화면용 글꼴을 불러올 수 없습니다: {font_path}")
+    families = QFontDatabase.applicationFontFamilies(font_id)
+    if not families:
+        raise RuntimeError("문서 화면용 글꼴에서 font family를 확인할 수 없습니다.")
+
+    font = QFont(families[0], 9)
+    if not QFontMetrics(font).inFontUcs4(ord("한")):
+        raise RuntimeError(f"문서 화면용 글꼴이 한글을 지원하지 않습니다: {families[0]}")
+    app.setFont(font)
 
 
 def _prepare_window() -> tuple[QApplication, MainWindow]:
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("Aruba 2930F 설정 백업")
     app.setStyle("Fusion")
+    _apply_documentation_font(app)
 
     window = MainWindow(service=None)
     window.resize(1040, 760)
