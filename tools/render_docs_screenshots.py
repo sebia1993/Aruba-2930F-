@@ -78,16 +78,12 @@ def _verify_image(path: Path) -> None:
         raise RuntimeError(f"생성된 문서 화면을 PNG로 다시 읽을 수 없습니다: {path}")
     if image.width() < 800 or image.height() < 600:
         raise RuntimeError(
-            f"문서 화면 해상도가 예상보다 작습니다: {path} "
-            f"({image.width()}x{image.height()})"
+            f"문서 화면 해상도가 예상보다 작습니다: {path} ({image.width()}x{image.height()})"
         )
     if path.stat().st_size < 1_024:
         raise RuntimeError(f"문서 화면 파일이 비정상적으로 작습니다: {path}")
 
-    print(
-        f"created: {path} "
-        f"({image.width()}x{image.height()}, {path.stat().st_size} bytes)"
-    )
+    print(f"created: {path} ({image.width()}x{image.height()}, {path.stat().st_size} bytes)")
 
 
 def main() -> int:
