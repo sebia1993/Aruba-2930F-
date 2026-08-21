@@ -56,6 +56,20 @@ jobs:
         shell: pwsh
         run: ./tools/validate.ps1 -PythonPath python
 
+      - name: Render documentation screenshots
+        shell: pwsh
+        run: |
+          python tools/render_docs_screenshots.py --output artifacts/docs-screenshots
+          if ($LASTEXITCODE -ne 0) { throw "Documentation screenshot rendering failed." }
+
+      - name: Upload documentation screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Aruba2930FConfigBackup-docs-screenshots
+          path: artifacts/docs-screenshots/*.png
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Build and verify portable package
         shell: pwsh
         run: ./build_windows.ps1 -PythonPath python -Version 0.1.8 -SkipValidation -UseCurrentEnvironment

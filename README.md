@@ -1,12 +1,15 @@
 # Aruba 2930F 설정 백업
 
-**ArubaOS-Switch 기반 Aruba 2930F 여러 대의 `running-config`를 SSH로 일괄 수집하는 Windows용 읽기 전용 도구입니다.**
+[![CI](https://github.com/sebia1993/Aruba-2930F-/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sebia1993/Aruba-2930F-/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-반복적인 장비 접속과 수동 설정 백업을 줄이고, 장비 식별·SSH 장비 지문 검증·수집 결과 무결성 확인까지 하나의 운영 절차로 묶는 것을 목표로 합니다.
+**ArubaOS-Switch 기반 Aruba 2930F 여러 대의 `running-config`를 SSH로 일괄 수집하는 Windows용 읽기 전용 네트워크 자동화 도구입니다.**
 
-> 현재 배포 버전은 **v0.1.8 사전릴리즈**입니다. 자동 검증과 Windows 패키지 검증은 통과하지만 실제 운영 장비 검증은 별도로 수행해야 합니다. 자세한 범위는 [검증 현황](#검증-현황)을 참고하십시오.
+반복적인 장비 접속과 수동 설정 백업을 줄이고, **장비 식별 → 안전한 CLI 수집 → 실패 격리 → 결과 무결성 확인 → 보고서 생성**을 하나의 운영 절차로 묶는 것을 목표로 합니다.
 
-## 운영 관점 요약
+> 현재 배포 버전은 **v0.1.8 사전릴리즈**입니다. 단위 테스트, 가상/루프백 SSH 검증, Windows 패키지 점검, SHA-256 및 SBOM 검증을 자동화했습니다. 실제 Aruba 2930F 현장 검증은 [검증 보고서](docs/VALIDATION_REPORT.md)에서 별도로 관리합니다.
+
+## 한눈에 보기
 
 | 항목 | 내용 |
 |---|---|
@@ -17,36 +20,38 @@
 | 장비 변경 | **없음 — 설정 모드에 진입하지 않음** |
 | 사전 확인 | SSH 장비 지문, EXEC 프롬프트, `no page`, 모델/SKU |
 | 동시 처리 | 기본 10대, 최대 20대 |
-| 결과 | 장비별 TXT, SHA-256, `result.xlsx`, 진단 로그 |
+| 실패 처리 | 장비 단위 격리, 5/15/30초 지연 재시도 |
+| 결과 | 장비별 TXT, SHA-256, `result.xlsx`, 비민감 진단 로그 |
 | 실행 환경 | Windows x64, Python 설치 불필요한 배포 ZIP |
-| 현재 상태 | 사전릴리즈 / 실제 장비 현장 검증 필요 |
 
-## 왜 만들었나
+## 해결하려 한 운영 문제
 
-여러 대의 액세스 스위치 설정을 수동으로 백업하면 다음 문제가 반복됩니다.
+여러 대의 액세스 스위치 설정을 사람이 직접 백업하면 다음 문제가 반복될 수 있습니다.
 
-- 장비마다 접속하고 `show running-config`를 실행해야 함
+- 장비마다 접속해 동일한 명령을 반복해야 함
 - 페이지 출력 때문에 설정 일부가 누락될 수 있음
 - 잘못된 장비에 접속했는지 사람이 직접 판단해야 함
-- 일부 장비의 일시적인 SSH 실패 때문에 전체 작업이 끊길 수 있음
-- 백업 파일과 실행 결과를 별도로 정리해야 함
-- 백업 파일이 정상적으로 저장되었는지 무결성 확인이 필요함
+- 일부 장비의 일시적인 SSH 장애가 전체 작업 흐름을 방해할 수 있음
+- 수집 파일과 성공/실패 결과를 별도로 정리해야 함
+- 저장된 설정 파일이 온전한지 확인할 근거가 부족함
 
-이 도구는 위 작업을 **장비 확인 → 읽기 전용 수집 → 결과 검증 → 보고서 생성** 흐름으로 자동화합니다.
+이 프로젝트는 단순히 SSH 명령을 반복하는 것이 아니라, **운영 과정에서 발생할 수 있는 실패와 오인 가능성까지 함께 제어하는 것**을 설계 목표로 삼았습니다.
 
-## 핵심 기능
+## 핵심 설계 판단
 
-- 여러 IPv4 주소를 붙여 넣어 Aruba 2930F를 병렬 백업
-- 매 연결에서 `no page`를 먼저 적용하고 응답을 검증
-- `show version`, `show modules`를 이용한 2930F / VSF 식별
-- 모델 확인 후에만 `show running-config` 실행
-- 최초 SSH 장비 지문 검토 및 이후 지문 변경 차단
-- 일시적인 연결 오류에 대해 5초 → 15초 → 30초 지연 재시도
-- 재시도 소진 장비만 별도로 다시 수집
-- 장비별 TXT 설정 백업과 SHA-256 계산
-- 실행 결과를 `result.xlsx`로 정리
-- 암호와 Enable 암호를 파일에 저장하지 않음
-- Python이 없는 Windows PC에서도 실행 가능한 x64 배포 ZIP 제공
+| 운영 문제 | 설계 판단 |
+|---|---|
+| 페이지 출력으로 설정 누락 가능 | 모든 연결에서 `no page`를 먼저 적용하고 정상 응답을 확인한 뒤 `show` 명령 실행 |
+| 다른 장비에 잘못 접속할 가능성 | `show version` + `show modules`의 증거를 함께 확인한 뒤 2930F 계열에서만 설정 수집 |
+| SSH 대상 장비가 바뀌었을 가능성 | 최초 SSH 장비 지문을 운영자가 검토하고, 승인된 지문이 변경되면 연결 차단 |
+| 특정 장비 실패가 전체 작업에 영향 | 장비별 상태와 실패를 격리하고 제한된 동시 처리 적용 |
+| 일시적인 통신 장애 | 즉시 반복 대신 5초 → 15초 → 30초 지연 재시도 |
+| 인증/모델 오류 같은 영구 실패 | 동일 조건을 반복하지 않고 즉시 종료 |
+| 백업 파일의 무결성 확인 | 장비별 설정 파일 저장 후 SHA-256 계산 |
+| 운영망 변경 위험 | 설정 모드와 구성 변경 명령을 허용하지 않는 읽기 전용 흐름 유지 |
+| 문제 재현 시 민감정보 노출 위험 | IP·계정·암호·설정 원문을 포함하지 않는 오류 분류와 오프라인 진단 코드 사용 |
+
+설계 배경과 구성요소별 책임은 [프로그램 구조](docs/ARCHITECTURE.md)에 더 자세히 정리되어 있습니다.
 
 ## 동작 구조
 
@@ -86,7 +91,17 @@ show running-config
 TXT 저장 + SHA-256 + Excel 결과 기록
 ```
 
-설정 모드에 진입하거나 장비 구성을 변경하는 명령은 실행하지 않습니다.
+## 실행 화면
+
+아래 이미지는 **문서용 가상 IP와 가상 장비명만 사용해 프로그램 자체에서 생성한 예시 화면**입니다. 실제 운영망 주소, 계정, 설정 정보는 포함하지 않습니다.
+
+### 작업 입력 화면
+
+![Aruba 2930F 설정 백업 메인 화면](docs/images/main-window.png)
+
+### 수집 완료 예시
+
+![Aruba 2930F 설정 백업 결과 화면](docs/images/result-example.png)
 
 ## 지원 및 검증 범위
 
@@ -95,7 +110,7 @@ TXT 저장 + SHA-256 + Excel 결과 기록
 | 구분 | 상태 | 비고 |
 |---|---|---|
 | Aruba 2930F | 지원 | 모델/SKU 확인 후 설정 수집 |
-| Aruba 2930F VSF | 지원 | 복수 공식 SKU가 확인되는 구성 포함 |
+| Aruba 2930F VSF | 지원 로직 | 복수 공식 SKU가 확인되는 구성 포함 |
 | ArubaOS-Switch | 지원 대상 | 장비별 OS 차이는 현장 검증 필요 |
 | SSH 암호 인증 | 지원 | 공통 계정 사용 |
 | Enable 암호 | 선택 지원 | 필요한 환경에서만 사용 |
@@ -114,10 +129,11 @@ TXT 저장 + SHA-256 + Excel 결과 기록
 | Windows 패키지 실행 점검 | ✅ 자동 검증 |
 | 릴리즈 ZIP SHA-256 검증 | ✅ 자동 검증 |
 | SBOM 생성 및 검증 | ✅ 자동 검증 |
-| 실제 Aruba 2930F 운영 장비 | ⚠️ 별도 현장 검증 필요 |
-| 대규모 운영망 장시간 검증 | ⚠️ 별도 현장 검증 필요 |
+| 문서용 UI 렌더링 | ✅ CI 검증 |
+| 실제 Aruba 2930F 운영 장비 | ⚠️ 현장 검증 기록 필요 |
+| 대규모 운영망 장시간 검증 | ⚠️ 현장 검증 기록 필요 |
 
-자동 테스트 통과가 실제 운영 장비에서의 완전한 호환성을 보증하지는 않습니다. 처음 적용할 때는 소수 장비에서 결과를 대조한 뒤 범위를 확대하는 방식을 권장합니다.
+자동 검증과 실제 장비 검증을 구분해 기록합니다. 실제 장비 테스트 항목, 합격 기준, 공개 가능한 증거 형식은 [VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md)에 정의했습니다.
 
 ## 빠른 시작
 
@@ -137,9 +153,7 @@ Get-Content .\Aruba2930FConfigBackup_v0.1.8_windows_x64.zip.sha256
 
 > EXE만 ZIP에서 따로 꺼내 실행하지 마십시오. 현재 사전릴리즈는 Authenticode 서명이 없어 Windows SmartScreen 경고가 표시될 수 있습니다.
 
-## 장비에서 실행되는 명령
-
-수집 과정에서 사용하는 핵심 명령은 다음과 같습니다.
+## 장비에서 실행되는 핵심 명령
 
 ```text
 no page
@@ -149,7 +163,7 @@ show running-config
 ```
 
 - `no page`가 정상 적용되지 않으면 이후 `show` 명령을 실행하지 않습니다.
-- `show version`과 `show modules`로 2930F 계열 여부를 확인합니다.
+- `show version`과 `show modules`를 함께 사용해 2930F 계열 여부를 확인합니다.
 - 2930F 식별이 끝난 뒤 `show running-config`를 한 번 실행합니다.
 - `(config)#`와 같은 설정 모드 프롬프트는 허용하지 않습니다.
 
@@ -170,12 +184,12 @@ show running-config
 
 파일 이름은 실행 시 **장비 이름 / IP / 장비 이름(IP)** 중 하나를 선택할 수 있습니다. 장비 이름을 확인할 수 없으면 IP를 사용합니다.
 
-`result.xlsx`에는 다음과 같은 운영 결과가 기록됩니다.
+`result.xlsx`에는 다음 운영 결과가 기록됩니다.
 
 - 장비 주소
 - 확인된 호스트명과 모델/SKU
 - 성공/실패 상태
-- SSH 장비 지문 및 백업 시도 횟수
+- SSH 장비 지문 확인 및 백업 시도 횟수
 - 전체 연결 시도 횟수
 - 소요 시간
 - 백업 파일 경로
@@ -186,8 +200,6 @@ show running-config
 백업 TXT에는 실제 장비 설정이 포함되므로 조직의 설정 파일 보관 정책에 따라 보호해야 합니다.
 
 ## 운영 안전 원칙
-
-이 프로젝트는 다음 원칙을 고정합니다.
 
 - 장비 설정을 변경하지 않음
 - 설정 모드에 진입하지 않음
@@ -230,10 +242,12 @@ show running-config
 | 문서 | 내용 |
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | 프로그램 구성, 수집 단계, 결과 생성 흐름 |
+| [VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md) | 자동/실장비 검증 항목, 합격 기준, 검증 기록 |
 | [SSH_AND_SAFETY.md](docs/SSH_AND_SAFETY.md) | 프롬프트, `no page`, 모델 식별, 레거시 SSH, 안전 경계 |
 | [ERROR_CODES.md](docs/ERROR_CODES.md) | 오류 코드와 1차 확인 방향 |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 현장 적용 시 점검 순서와 대표 문제 |
 | [RELEASE_POLICY.md](docs/RELEASE_POLICY.md) | 버전·릴리즈·검증 원칙 |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | 개발 환경, 테스트, 유지관리 규칙 |
 | [SECURITY.md](SECURITY.md) | 취약점 제보와 보안 정책 |
 | [CHANGELOG.md](CHANGELOG.md) | 버전별 상세 변경 이력 |
 
@@ -257,21 +271,6 @@ powershell -ExecutionPolicy Bypass -File .\tools\validate.ps1 `
   -PythonPath .\.venv\Scripts\python.exe
 ```
 
-Windows 배포 패키지 빌드:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build_windows.ps1 `
-  -PythonPath C:\Python314\python.exe -Version 0.1.8
-```
-
-## 릴리즈 원칙
-
-작은 문구 수정이나 내부 정리는 즉시 새 버전을 만들지 않고 `Unreleased`에 모읍니다. 실제 운영 영향이 있는 기능 묶음이나 버그 수정이 준비되고 자동 검증이 통과했을 때 릴리즈합니다.
-
-릴리즈에는 Windows x64 ZIP, SHA-256, CycloneDX SBOM이 포함되며, 태그·`main` 커밋·빌드 산출물 출처가 일치할 때만 게시됩니다. 자세한 기준은 [RELEASE_POLICY.md](docs/RELEASE_POLICY.md)를 참고하십시오.
-
 ## 라이선스와 보안 제보
 
-MIT License로 배포됩니다.
-
-보안 문제를 제보할 때는 공개 Issue에 장비 IP, 설정 원문, 계정 또는 자격증명을 올리지 마십시오. 자세한 절차는 [SECURITY.md](SECURITY.md)를 참고하십시오.
+MIT License로 배포됩니다. 취약점은 공개 Issue에 장비 주소, 설정 또는 자격증명을 올리지 말고 [SECURITY.md](SECURITY.md)의 절차로 제보하십시오.
