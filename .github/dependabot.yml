@@ -4,7 +4,19 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
+    groups:
+      python-runtime:
+        patterns:
+          - "netmiko"
+          - "paramiko"
+          - "PySide6*"
+          - "shiboken6"
+          - "openpyxl"
+      python-tooling:
+        dependency-type: development
+        patterns:
+          - "*"
     labels:
       - dependencies
       - python
@@ -13,7 +25,11 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
+    groups:
+      github-actions:
+        patterns:
+          - "*"
     labels:
       - dependencies
       - github-actions
