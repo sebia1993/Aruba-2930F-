@@ -1,0 +1,88 @@
+name: Refresh documentation screenshots
+
+on:
+  push:
+    branches:
+      - agent/fix-doc-screenshots
+    paths:
+      - .github/workflows/refresh-doc-screenshots.yml
+
+permissions:
+  contents: write
+
+jobs:
+  render-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.14 x64
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.14"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-lock.txt
+            requirements-dev.txt
+
+      - name: Install project
+        shell: pwsh
+        run: |
+          python -m pip install --no-input pip==26.2.1 setuptools==84.0.0
+          if ($LASTEXITCODE -ne 0) { throw "Bootstrap tool installation failed." }
+          python -m pip install --no-input -r requirements-lock.txt -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { throw "Locked dependency installation failed." }
+          python -m pip install --no-input --no-deps -e .
+          if ($LASTEXITCODE -ne 0) { throw "Editable package installation failed." }
+
+      - name: Render verified Korean UI screenshots
+        shell: pwsh
+        run: |
+          $fontBlobSha = 'b386890ba945e1f39448a6b59f20c5d194f58808'
+          $fontApi = "https://api.github.com/repos/google/fonts/git/blobs/$fontBlobSha"
+          $headers = @{
+            Accept = 'application/vnd.github+json'
+            'User-Agent' = 'Aruba2930FConfigBackup-CI'
+          }
+          $fontBlob = Invoke-RestMethod -Uri $fontApi -Headers $headers
+          if ($fontBlob.sha -ne $fontBlobSha -or $fontBlob.encoding -ne 'base64') {
+            throw 'Pinned Noto Sans KR blob verification failed.'
+          }
+          $fontPath = Join-Path $env:RUNNER_TEMP 'NotoSansKR.ttf'
+          $fontBytes = [Convert]::FromBase64String(($fontBlob.content -replace '\s', ''))
+          [IO.File]::WriteAllBytes($fontPath, $fontBytes)
+          if ((Get-Item -LiteralPath $fontPath).Length -ne 10414588) {
+            throw 'Pinned Noto Sans KR font size verification failed.'
+          }
+          $env:DOCS_FONT_PATH = $fontPath
+          python tools/render_docs_screenshots.py --output docs/images
+          if ($LASTEXITCODE -ne 0) { throw "Documentation screenshot rendering failed." }
+
+      - name: Commit exact rendered PNGs
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- docs/images/main-window.png docs/images/result-example.png
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'Documentation screenshots already match rendered output.'
+            exit 0
+          }
+          git commit -m 'docs: refresh verified application screenshots'
+          if ($LASTEXITCODE -ne 0) { throw 'Screenshot commit failed.' }
+          git push origin "HEAD:$env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) { throw 'Screenshot push failed.' }
