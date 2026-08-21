@@ -69,6 +69,7 @@ def _save_main_window(output: Path) -> None:
 
 def _save_result_example(output: Path) -> None:
     app, window = _prepare_window()
+    window.resize(1040, 880)
     rows = (
         ("192.0.2.10", "LAB-2930F-01", "Aruba 2930F / JL255A", "성공", "지문 1/4 · 백업 1/4", ""),
         ("192.0.2.11", "LAB-2930F-02", "Aruba 2930F / JL256A", "성공", "지문 1/4 · 백업 1/4", ""),
